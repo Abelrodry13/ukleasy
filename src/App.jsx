@@ -83,12 +83,12 @@ function click(ctx, t, accent = false) {
 }
 
 // ---- Progreso persistente ----
-const DEFAULT_PROGRESS = { bestCpm: {}, levels: {}, history: [] };
+const DEFAULT_PROGRESS = { bestCpm: {}, levels: {}, history: [], retoLevels: {}, sessions: [] };
 let memProgress = { ...DEFAULT_PROGRESS };
 async function loadProgress() {
   try {
     const raw = localStorage.getItem("uke-progress");
-    if (raw) return JSON.parse(raw);
+    if (raw) return { ...DEFAULT_PROGRESS, ...JSON.parse(raw) };
   } catch (e) { /* sin storage: memoria */ }
   return memProgress;
 }
@@ -659,8 +659,44 @@ function Rasgueo() {
   );
 }
 
-// =================== Reto (detección por micrófono) ===================
-const CHORD_PCS = { C: [0, 4, 7], Am: [9, 0, 4], F: [5, 9, 0], G7: [7, 11, 2, 5] };
+// =================== Canciones (tradicionales / dominio público) ===================
+// Solo progresiones de acordes: las progresiones no tienen copyright.
+const SONGS = [
+  { id: "martinillo", n: "Martinillo", origen: "Tradicional", level: 1, beats: 4, chords: ["C"], bars: ["C", "C", "C", "C"], strum: "basico", tip: "Toda la canción con Do. Céntrate solo en llevar el ritmo constante." },
+  { id: "tomdooley", n: "Tom Dooley", origen: "Tradicional", level: 1, beats: 4, chords: ["C", "G7"], bars: ["C", "C", "G7", "G7"], strum: "basico", tip: "Un cambio cada dos compases. Prepara el G7 un pulso antes." },
+  { id: "cucaracha", n: "La Cucaracha", origen: "Tradicional", level: 1, beats: 4, chords: ["C", "G7"], bars: ["C", "C", "G7", "G7", "G7", "G7", "C", "C"], strum: "vaiven", tip: "Mismo par de acordes, más rápido. Canta encima cuando salga sola." },
+  { id: "cumple", n: "Cumpleaños feliz", origen: "Tradicional", level: 2, beats: 3, chords: ["C", "F", "G7"], bars: ["C", "G7", "G7", "C", "C", "F", "G7", "C"], strum: "basico", tip: "Va en 3/4: tres golpes abajo por compás, el primero más fuerte." },
+  { id: "estrellita", n: "Estrellita", origen: "Tradicional", level: 2, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "F", "C", "G7"], strum: "basico", tip: "Cuatro compases en bucle. Tu primera canción con tres acordes." },
+  { id: "susanna", n: "Oh! Susanna", origen: "Tradicional", level: 2, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "C", "G7", "C", "C", "F", "G7", "C"], strum: "vaiven", tip: "Estructura de ocho compases, la base de mucho folk y country." },
+  { id: "doowop", n: "El bucle doo-wop", origen: "Progresión clásica", level: 3, beats: 4, chords: ["C", "Am", "F", "G7"], bars: ["C", "Am", "F", "G7"], strum: "clasico", tip: "La progresión de cientos de éxitos pop. Cántale encima cualquier melodía que te suene: probablemente encaje." },
+  { id: "cielito", n: "Cielito Lindo", origen: "Tradicional", level: 3, beats: 3, chords: ["C", "F", "G7"], bars: ["C", "F", "G7", "C"], strum: "basico", tip: "Vals en 3/4 para cantar y tocar a la vez. Ay, ay, ay, ay." },
+  { id: "folk", n: "El bucle folk", origen: "Progresión clásica", level: 4, beats: 4, chords: ["G", "Em", "C", "D"], bars: ["G", "Em", "C", "D"], strum: "pop", tip: "Introduce G, Em y D. Cuando salga limpio, prueba el patrón percusivo." },
+  { id: "sloopjohnb", n: "Sloop John B", origen: "Tradicional", level: 4, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "C", "C", "C", "C", "F", "G7", "C"], strum: "percusivo", tip: "Compases largos sobre Do: perfectos para meter el chuck sin perderte." },
+];
+
+function strumAt(ctx, chordKey, t, vol = 0.16, up = false) {
+  const c = CHORDS[chordKey];
+  const order = up ? [3, 2, 1, 0] : [0, 1, 2, 3];
+  order.forEach((idx, i) => pluck(ctx, freq(OPEN[STRING_ORDER[idx]], c.frets[idx]), t + i * 0.02, 1.1, vol));
+}
+function playSong(bars, beats, bpm = 96) {
+  const ctx = getCtx();
+  const start = ctx.currentTime + 0.06;
+  const spb = 60 / bpm;
+  bars.forEach((ch, bi) => {
+    for (let b = 0; b < beats; b++) strumAt(ctx, ch, start + (bi * beats + b) * spb, b === 0 ? 0.2 : 0.11);
+  });
+  return bars.length * beats * spb * 1000;
+}
+
+// =================== Reto (detección por micrófono, con niveles) ===================
+const RETO_LEVELS = [
+  { lv: 1, n: "Iniciación", meta: 12, pares: [["C", "Am"]] },
+  { lv: 2, n: "Soltura", meta: 16, pares: [["C", "F"], ["Am", "G7"]] },
+  { lv: 3, n: "El cruce", meta: 20, pares: [["F", "G7"]] },
+  { lv: 4, n: "Ciclo completo", meta: 24, ciclo: ["C", "Am", "F", "G7"] },
+];
+const CHORD_PCS = { C: [0, 4, 7], Am: [9, 0, 4], F: [5, 9, 0], G7: [7, 11, 2, 5], G: [7, 11, 2], Em: [4, 7, 11], D: [2, 6, 9] };
 function chromaFromFFT(freqData, sampleRate, fftSize) {
   const chroma = new Array(12).fill(0);
   const binHz = sampleRate / fftSize;
@@ -685,9 +721,23 @@ function chordSimilarity(chroma, chord) {
   pcs.forEach((pc) => { dot += chroma[pc]; });
   return dot / (norm * Math.sqrt(pcs.length));
 }
+// Devuelve el mejor candidato entre varios acordes, o null
+function detectChord(chroma, candidates) {
+  let best = null, bestS = -1, second = -1;
+  candidates.forEach((ch) => {
+    const s = chordSimilarity(chroma, ch);
+    if (s > bestS) { second = bestS; bestS = s; best = ch; }
+    else if (s > second) second = s;
+  });
+  if (bestS > 0.45 && bestS - second > 0.02) return best;
+  return null;
+}
 
 function Reto({ progress, onSave }) {
-  const [pairIdx, setPairIdx] = useState(0);
+  const passed = progress.retoLevels || {};
+  const firstOpen = RETO_LEVELS.findIndex((l) => !passed[l.lv]);
+  const [lvIdx, setLvIdx] = useState(firstOpen === -1 ? RETO_LEVELS.length - 1 : firstOpen);
+  const [subIdx, setSubIdx] = useState(0);
   const [running, setRunning] = useState(false);
   const [left, setLeft] = useState(60);
   const [count, setCount] = useState(0);
@@ -706,9 +756,11 @@ function Reto({ progress, onSave }) {
   const lastCountT = useRef(0);
   const noiseRef = useRef(1e9);
 
-  const pair = PAIRS[pairIdx];
-  const key = pair.join("-");
+  const level = RETO_LEVELS[lvIdx];
+  const candidates = level.ciclo || level.pares[Math.min(subIdx, level.pares.length - 1)];
+  const key = level.ciclo ? "ciclo" : candidates.join("-");
   const best = progress.bestCpm[key] || 0;
+  const isUnlocked = (i) => i === 0 || !!passed[RETO_LEVELS[i - 1].lv];
 
   const stopMic = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -724,11 +776,12 @@ function Reto({ progress, onSave }) {
     setRunning(false);
     setResult(finalCount);
     click(getCtx(), getCtx().currentTime, true);
-    const p = { ...progress, bestCpm: { ...progress.bestCpm } };
+    const p = { ...progress, bestCpm: { ...progress.bestCpm }, retoLevels: { ...(progress.retoLevels || {}) } };
     if (finalCount > (p.bestCpm[key] || 0)) p.bestCpm[key] = finalCount;
+    if (finalCount >= level.meta) p.retoLevels[level.lv] = true;
     p.history = [...(p.history || []), { key, cpm: finalCount, date: new Date().toISOString().slice(0, 10) }].slice(-50);
     onSave(p);
-  }, [progress, key, onSave, stopMic]);
+  }, [progress, key, level, onSave, stopMic]);
 
   const addChange = useCallback(() => {
     countRef.current += 1;
@@ -753,7 +806,7 @@ function Reto({ progress, onSave }) {
     currentRef.current = null;
 
     const freqData = new Float32Array(analyser.frequencyBinCount);
-    const [a, b] = PAIRS[pairIdx];
+    const cands = candidates.slice();
     const loop = () => {
       if (!analyserRef.current) return;
       analyserRef.current.getFloatFrequencyData(freqData);
@@ -761,14 +814,7 @@ function Reto({ progress, onSave }) {
       noiseRef.current = Math.min(noiseRef.current * 1.002, total || noiseRef.current);
       const loud = total > Math.max(noiseRef.current * 3, 0.004);
 
-      let cand = null;
-      if (loud) {
-        const sA = chordSimilarity(chroma, a);
-        const sB = chordSimilarity(chroma, b);
-        const bestS = Math.max(sA, sB);
-        if (bestS > 0.45 && Math.abs(sA - sB) > 0.02) cand = sA > sB ? a : b;
-      }
-
+      const cand = loud ? detectChord(chroma, cands) : null;
       const st = stableRef.current;
       if (cand && cand === st.chord) st.frames += 1;
       else stableRef.current = { chord: cand, frames: cand ? 1 : 0 };
@@ -813,7 +859,7 @@ function Reto({ progress, onSave }) {
   const tapManual = () => {
     if (!running) return;
     addChange();
-    strumChord(countRef.current % 2 === 0 ? pair[0] : pair[1], false, 0.1);
+    strumChord(candidates[countRef.current % candidates.length], false, 0.1);
   };
 
   const Stat = ({ label, value, color }) => (
@@ -826,32 +872,62 @@ function Reto({ progress, onSave }) {
   return (
     <div>
       <p style={{ color: T.soft, fontSize: 15, lineHeight: 1.5, margin: "0 4px 16px" }}>
-        Tu métrica de progreso: <b style={{ color: T.ink, fontWeight: 600 }}>cambios por minuto</b>. Empieza, alterna
-        los dos acordes y el micrófono cuenta los cambios. Meta para el Nivel 2: 20 o más.
+        Cambios por minuto detectados con el micrófono. Supera la meta de cada nivel para desbloquear el siguiente.
       </p>
 
-      <div style={{ background: T.track, borderRadius: 12, padding: 2, display: "flex", marginBottom: 18 }}>
-        {PAIRS.map((p, i) => (
-          <button key={i} onClick={() => { if (!running) { setPairIdx(i); setResult(null); } }}
-            style={{
-              flex: 1, border: "none", borderRadius: 10, padding: "8px 0",
-              fontFamily: FONT, fontSize: 13, fontWeight: 600,
-              color: pairIdx === i ? T.ink : T.soft,
-              background: pairIdx === i ? T.segActive : "transparent",
-              boxShadow: pairIdx === i ? "var(--shadow-seg)" : "none",
-              opacity: running && pairIdx !== i ? 0.4 : 1,
-              transition: "all .2s",
-            }}>
-            {p[0]} · {p[1]}
-          </button>
-        ))}
+      {/* Niveles del reto */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        {RETO_LEVELS.map((l, i) => {
+          const open = isUnlocked(i);
+          const done = !!passed[l.lv];
+          const active = i === lvIdx;
+          return (
+            <button key={l.lv} onClick={() => { if (open && !running) { setLvIdx(i); setSubIdx(0); setResult(null); } }}
+              style={{
+                flex: 1, borderRadius: 14, padding: "9px 2px", fontFamily: FONT,
+                background: active ? T.tintSoft : T.card,
+                border: `1px solid ${active ? T.tint : done ? T.green : T.hair}`,
+                opacity: open ? 1 : 0.45, transition: "all .2s",
+              }}>
+              <div style={{
+                fontSize: 15, fontWeight: 700,
+                color: done ? T.green : active ? T.tint : T.ink,
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
+              }}>
+                {done ? <Icon d={IC.check} size={13} color={T.green} /> : !open ? <Icon d={IC.lock} size={12} color={T.soft} /> : null}
+                {l.lv}
+              </div>
+              <div style={{ fontSize: 10, color: T.soft, fontWeight: 600, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.n}</div>
+            </button>
+          );
+        })}
       </div>
 
-      <div style={{ display: "flex", justifyContent: "center", gap: 34, marginBottom: 18 }}>
-        {pair.map((k) => (
-          <div key={k} style={{ width: 86, display: "flex", flexDirection: "column", alignItems: "center" }}>
+      {/* Sub-pareja si el nivel tiene varias */}
+      {!level.ciclo && level.pares.length > 1 && (
+        <div style={{ background: T.track, borderRadius: 12, padding: 2, display: "flex", marginBottom: 16 }}>
+          {level.pares.map((p, i) => (
+            <button key={i} onClick={() => { if (!running) { setSubIdx(i); setResult(null); } }}
+              style={{
+                flex: 1, border: "none", borderRadius: 10, padding: "8px 0",
+                fontFamily: FONT, fontSize: 13, fontWeight: 600,
+                color: subIdx === i ? T.ink : T.soft,
+                background: subIdx === i ? T.segActive : "transparent",
+                boxShadow: subIdx === i ? "var(--shadow-seg)" : "none",
+                transition: "all .2s",
+              }}>
+              {p[0]} · {p[1]}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Diagramas de los acordes en juego */}
+      <div style={{ display: "flex", justifyContent: "center", gap: level.ciclo ? 12 : 34, marginBottom: 16 }}>
+        {candidates.map((k) => (
+          <div key={k} style={{ width: level.ciclo ? 66 : 86, display: "flex", flexDirection: "column", alignItems: "center" }}>
             <div style={{
-              fontWeight: 700, fontSize: 16, marginBottom: 2,
+              fontWeight: 700, fontSize: level.ciclo ? 13 : 16, marginBottom: 2,
               color: heard === k && running ? T.tint : T.ink, transition: "color .15s",
             }}>
               {k}
@@ -863,11 +939,13 @@ function Reto({ progress, onSave }) {
 
       <div style={{
         background: T.card, borderRadius: 16, border: `1px solid ${T.hair}`,
-        display: "flex", padding: "12px 8px", marginBottom: 16,
+        display: "flex", padding: "12px 8px", marginBottom: 16, boxShadow: "var(--shadow-card)",
       }}>
         <Stat label="Tiempo" value={`0:${String(left % 60).padStart(2, "0")}`} color={left <= 10 && running ? T.red : T.ink} />
         <div style={{ width: 1, background: T.hair }} />
         <Stat label="Cambios" value={count} color={T.tint} />
+        <div style={{ width: 1, background: T.hair }} />
+        <Stat label="Meta" value={level.meta} color={count >= level.meta ? T.green : T.soft} />
         <div style={{ width: 1, background: T.hair }} />
         <Stat label="Récord" value={best} color={T.soft} />
       </div>
@@ -889,14 +967,14 @@ function Reto({ progress, onSave }) {
               <Icon d={IC.mic} size={17} /> {heard ? `Oigo ${heard}` : "Escuchando…"}
             </div>
             <div style={{ fontSize: 13, color: T.soft, marginTop: 4 }}>
-              Rasguea cada acorde dos o tres veces antes de cambiar.
+              {level.ciclo ? "Recorre el ciclo C, Am, F, G7 en orden." : "Rasguea cada acorde dos o tres veces antes de cambiar."}
             </div>
           </div>
         )
       ) : (
         <div style={{ textAlign: "center" }}>
           <Button onClick={start} style={{ width: "100%", padding: "15px 0", fontSize: 17 }}>
-            <Icon d={manual ? IC.play : IC.mic} size={15} filled={manual} color="#fff" /> Empezar reto de 60 s
+            <Icon d={manual ? IC.play : IC.mic} size={15} filled={manual} color="#fff" /> Empezar · Nivel {level.lv} del reto
           </Button>
         </div>
       )}
@@ -905,15 +983,17 @@ function Reto({ progress, onSave }) {
 
       {result !== null && (
         <div style={{
-          background: result >= 20 ? T.greenSoft : T.fill,
-          border: `1px solid ${result >= 20 ? T.green : T.hair}`,
+          background: result >= level.meta ? T.greenSoft : T.fill,
+          border: `1px solid ${result >= level.meta ? T.green : T.hair}`,
           borderRadius: 16, padding: "14px 16px", textAlign: "center", marginTop: 16,
         }}>
-          <div style={{ fontSize: 21, fontWeight: 700, color: result >= 20 ? T.green : T.ink }}>
-            {result} CPM{result >= 20 ? " · Nivel 2 superado" : result > 0 && result >= best ? " · Nuevo récord" : ""}
+          <div style={{ fontSize: 21, fontWeight: 700, color: result >= level.meta ? T.green : T.ink }}>
+            {result} CPM{result >= level.meta ? ` · Nivel ${level.lv} superado` : result > 0 && result >= best ? " · Nuevo récord" : ""}
           </div>
           <div style={{ fontSize: 13, color: T.soft, marginTop: 2 }}>
-            {result >= 20 ? "Prueba ahora otra pareja de acordes." : "La meta son 20. Lento y limpio gana a rápido y sucio."}
+            {result >= level.meta
+              ? (level.lv < 4 ? "Siguiente nivel desbloqueado." : "Has completado todos los niveles del reto.")
+              : `La meta son ${level.meta}. Lento y limpio gana a rápido y sucio.`}
           </div>
         </div>
       )}
@@ -931,7 +1011,7 @@ function Reto({ progress, onSave }) {
   );
 }
 
-// =================== Rutina ===================
+// =================== Rutina (con validación por micrófono) ===================
 const PHASES = [
   { id: "afinar", n: "Afinar", s: 60 },
   { id: "cambios", n: "Cambios de 2 acordes", s: 180 },
@@ -939,14 +1019,40 @@ const PHASES = [
   { id: "cancion", n: "Una canción entera", s: 300 },
   { id: "cantar", n: "Cantar mientras tocas", s: 180, opt: true },
 ];
-function Rutina() {
+function Rutina({ progress, onSave }) {
   const [withSinging, setWithSinging] = useState(true);
   const phases = withSinging ? PHASES : PHASES.filter((p) => !p.opt);
   const [idx, setIdx] = useState(0);
   const [left, setLeft] = useState(phases[0].s);
   const [run, setRun] = useState(false);
   const [pair, setPair] = useState(() => PAIRS[Math.floor(Math.random() * PAIRS.length)]);
+  const [useMic, setUseMic] = useState(true);
+  const [micOn, setMicOn] = useState(false);
+  const [live, setLive] = useState({ tuned: [], changes: 0, strums: 0, activePct: 0 });
+  const [valid, setValid] = useState({});
+
   const tick = useRef(null);
+  const rafRef = useRef(null);
+  const streamRef = useRef(null);
+  const analyserRef = useRef(null);
+  const idxRef = useRef(0);
+  const pairRef = useRef(pair);
+  const micOnRef = useRef(false);
+  const validRef = useRef({});
+  const savedRef = useRef(false);
+  const acc = useRef({ tuned: new Set(), changes: 0, strums: 0, activeMs: 0 });
+  const stableRef = useRef({ chord: null, frames: 0 });
+  const currentRef = useRef(null);
+  const lastCountT = useRef(0);
+  const prevRms = useRef(0);
+  const lastOnset = useRef(0);
+  const noiseRef = useRef(1e9);
+  const pitchSkip = useRef(0);
+  const lastT = useRef(0);
+  const lastLiveT = useRef(0);
+
+  useEffect(() => { idxRef.current = idx; }, [idx]);
+  useEffect(() => { pairRef.current = pair; }, [pair]);
 
   const newPair = useCallback(() => {
     setPair((prev) => {
@@ -958,6 +1064,140 @@ function Rutina() {
 
   const label = (p) => (p.id === "cambios" ? `Cambios ${pair[0]} y ${pair[1]}` : p.n);
 
+  const resetAcc = () => {
+    acc.current = { tuned: new Set(), changes: 0, strums: 0, activeMs: 0 };
+    stableRef.current = { chord: null, frames: 0 };
+    currentRef.current = null;
+    setLive({ tuned: [], changes: 0, strums: 0, activePct: 0 });
+  };
+
+  const evaluatePhase = useCallback((i, phs) => {
+    if (!micOnRef.current) { validRef.current[i] = null; setValid({ ...validRef.current }); resetAcc(); return; }
+    const a = acc.current;
+    const id = phs[i]?.id;
+    let ok = false;
+    if (id === "afinar") ok = a.tuned.size >= 2;
+    if (id === "cambios") ok = a.changes >= 15;
+    if (id === "rasgueo") ok = a.strums >= 40;
+    if (id === "cancion") ok = a.activeMs >= 150000;
+    if (id === "cantar") ok = a.activeMs >= 90000;
+    validRef.current[i] = ok;
+    setValid({ ...validRef.current });
+    resetAcc();
+  }, []);
+
+  const stopMic = useCallback(() => {
+    cancelAnimationFrame(rafRef.current);
+    if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    analyserRef.current = null;
+    micOnRef.current = false;
+    setMicOn(false);
+  }, []);
+
+  const startMic = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+    streamRef.current = stream;
+    const ctx = getCtx();
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 4096;
+    analyser.smoothingTimeConstant = 0.55;
+    src.connect(analyser);
+    analyserRef.current = analyser;
+    micOnRef.current = true;
+    setMicOn(true);
+    noiseRef.current = 1e9;
+    lastT.current = performance.now();
+
+    const td = new Float32Array(analyser.fftSize);
+    const fd = new Float32Array(analyser.frequencyBinCount);
+    const loop = () => {
+      if (!analyserRef.current) return;
+      const now = performance.now();
+      const dt = Math.min(100, now - lastT.current);
+      lastT.current = now;
+
+      analyserRef.current.getFloatTimeDomainData(td);
+      let rms = 0;
+      for (let i = 0; i < 2048; i++) rms += td[i] * td[i];
+      rms = Math.sqrt(rms / 2048);
+      noiseRef.current = Math.min(noiseRef.current * 1.001 + 1e-6, Math.max(rms, 1e-4));
+      const loud = rms > Math.max(noiseRef.current * 4, 0.012);
+
+      const id = phases[idxRef.current]?.id;
+      const a = acc.current;
+
+      if (id === "afinar") {
+        pitchSkip.current = (pitchSkip.current + 1) % 5;
+        if (pitchSkip.current === 0 && rms > 0.008) {
+          const f = autoCorrelate(td.subarray(0, 2048), getCtx().sampleRate);
+          if (f > 0) {
+            STRING_ORDER.forEach((s) => {
+              [f, f / 2, f * 2].forEach((ff) => {
+                const cents = 1200 * Math.log2(ff / OPEN[s]);
+                if (Math.abs(cents) <= 8) a.tuned.add(s);
+              });
+            });
+          }
+        }
+      } else if (id === "cambios") {
+        analyserRef.current.getFloatFrequencyData(fd);
+        const { chroma, total } = chromaFromFFT(fd, getCtx().sampleRate, 4096);
+        const cand = total > 0.004 && loud ? detectChord(chroma, pairRef.current) : null;
+        const st = stableRef.current;
+        if (cand && cand === st.chord) st.frames += 1;
+        else stableRef.current = { chord: cand, frames: cand ? 1 : 0 };
+        if (cand && stableRef.current.frames >= 6) {
+          if (currentRef.current && currentRef.current !== cand && now - lastCountT.current > 700) {
+            lastCountT.current = now;
+            a.changes += 1;
+          }
+          currentRef.current = cand;
+        }
+      } else if (id === "rasgueo") {
+        if (loud && prevRms.current < rms * 0.55 && now - lastOnset.current > 140) {
+          lastOnset.current = now;
+          a.strums += 1;
+        }
+      } else if (id === "cancion" || id === "cantar") {
+        if (rms > 0.012) a.activeMs += dt;
+      }
+      prevRms.current = rms;
+
+      if (now - lastLiveT.current > 250) {
+        lastLiveT.current = now;
+        const dur = phases[idxRef.current]?.s || 1;
+        setLive({
+          tuned: Array.from(a.tuned),
+          changes: a.changes,
+          strums: a.strums,
+          activePct: Math.min(100, Math.round((a.activeMs / (dur * 1000)) * 100)),
+        });
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    loop();
+  };
+
+  const saveSession = useCallback(() => {
+    if (savedRef.current) return;
+    savedRef.current = true;
+    const okCount = Object.values(validRef.current).filter((v) => v === true).length;
+    const withMic = Object.values(validRef.current).some((v) => v !== null);
+    const p = {
+      ...progress,
+      sessions: [...(progress.sessions || []), {
+        date: new Date().toISOString().slice(0, 10),
+        ok: withMic ? okCount : null,
+        total: phases.length,
+      }].slice(-200),
+    };
+    onSave(p);
+  }, [progress, onSave, phases.length]);
+
   useEffect(() => {
     if (run) {
       tick.current = setInterval(() => {
@@ -965,8 +1205,14 @@ function Rutina() {
           if (l <= 1) {
             click(getCtx(), getCtx().currentTime, true);
             setIdx((i) => {
+              evaluatePhase(i, phases);
               const next = i + 1;
-              if (next >= phases.length) { setRun(false); return i; }
+              if (next >= phases.length) {
+                setRun(false);
+                stopMic();
+                saveSession();
+                return i;
+              }
               setLeft(phases[next].s);
               return next;
             });
@@ -977,10 +1223,26 @@ function Rutina() {
       }, 1000);
     }
     return () => clearInterval(tick.current);
-  }, [run, phases.length]);
+  }, [run, phases.length, evaluatePhase, stopMic, saveSession, phases]);
 
-  const reset = () => { setRun(false); setIdx(0); setLeft(phases[0].s); newPair(); };
+  const start = async () => {
+    getCtx();
+    if (useMic && !micOnRef.current) {
+      try { await startMic(); } catch (e) { setUseMic(false); }
+    }
+    setRun(true);
+  };
+  const pause = () => setRun(false);
+
+  const reset = () => {
+    setRun(false); stopMic();
+    setIdx(0); setLeft(phases[0].s);
+    validRef.current = {}; setValid({});
+    savedRef.current = false;
+    resetAcc(); newPair();
+  };
   useEffect(() => { setRun(false); setIdx(0); setLeft(phases[0].s); /* eslint-disable-next-line */ }, [withSinging]);
+  useEffect(() => () => stopMic(), [stopMic]);
 
   const ph = phases[idx];
   const done = idx === phases.length - 1 && left === 0 && !run;
@@ -991,12 +1253,42 @@ function Rutina() {
   const totalMin = phases.reduce((a, p) => a + p.s, 0) / 60;
   const isCambios = ph.id === "cambios" && !done;
 
+  const liveContent = () => {
+    if (ph.id === "afinar") return (
+      <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
+        {STRING_ORDER.map((s) => (
+          <span key={s} style={{
+            width: 30, height: 30, borderRadius: 99, display: "inline-flex", alignItems: "center", justifyContent: "center",
+            fontSize: 13, fontWeight: 700,
+            background: live.tuned.includes(s) ? T.green : T.fill,
+            color: live.tuned.includes(s) ? "#fff" : T.soft,
+            transition: "all .2s",
+          }}>{s}</span>
+        ))}
+      </div>
+    );
+    if (ph.id === "cambios") return <LiveMetric value={live.changes} target={15} unit="cambios" />;
+    if (ph.id === "rasgueo") return <LiveMetric value={live.strums} target={40} unit="golpes" />;
+    return <LiveMetric value={live.activePct} target={50} unit="% de actividad" />;
+  };
+
   return (
     <div>
       <p style={{ color: T.soft, fontSize: 15, lineHeight: 1.5, margin: "0 4px 14px" }}>
-        <b style={{ color: T.ink, fontWeight: 600 }}>{totalMin} minutos al día.</b> Corto y diario gana a largo y
-        esporádico. En unas once semanas habrás sumado tus veinte horas.
+        <b style={{ color: T.ink, fontWeight: 600 }}>{totalMin} minutos al día.</b> El micrófono valida cada fase
+        mientras tocas: sin escribir nada, solo toca.
       </p>
+
+      <label style={{
+        background: T.card, border: `1px solid ${T.hair}`, borderRadius: 14,
+        display: "flex", alignItems: "center", gap: 10, padding: "12px 14px",
+        fontSize: 14, color: T.ink, cursor: "pointer", marginBottom: 10,
+      }}>
+        <input type="checkbox" checked={useMic} disabled={run}
+          onChange={(e) => { setUseMic(e.target.checked); if (!e.target.checked) stopMic(); }}
+          style={{ accentColor: T.tint, width: 17, height: 17 }} />
+        Validar la sesión con el micrófono
+      </label>
 
       <label style={{
         background: T.card, border: `1px solid ${T.hair}`, borderRadius: 14,
@@ -1039,7 +1331,7 @@ function Rutina() {
         </div>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
         <div className="neu-inset" style={{ width: 208, height: 208, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ position: "relative", width: 180, height: 180 }}>
           <svg width="180" height="180">
@@ -1064,8 +1356,18 @@ function Rutina() {
         </div>
       </div>
 
+      {/* Validación en directo */}
+      {run && micOn && (
+        <div className="neu-inset" style={{ borderRadius: 16, padding: "12px 14px", marginBottom: 16, textAlign: "center" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: T.tint, marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            <Icon d={IC.mic} size={13} /> Validando con el micrófono
+          </div>
+          {liveContent()}
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 18 }}>
-        <Button onClick={() => { getCtx(); setRun((r) => !r); }} disabled={done} style={{ minWidth: 132 }}>
+        <Button onClick={() => { run ? pause() : start(); }} disabled={done} style={{ minWidth: 132 }}>
           <Icon d={run ? IC.pause : IC.play} size={14} filled={!run} color="#fff" /> {run ? "Pausa" : "Empezar"}
         </Button>
         <Button kind="gray" onClick={reset}><Icon d={IC.reset} size={14} /> Reiniciar</Button>
@@ -1075,28 +1377,52 @@ function Rutina() {
         background: T.card, borderRadius: 16, border: `1px solid ${T.hair}`,
         boxShadow: "var(--shadow-card)", overflow: "hidden",
       }}>
-        {phases.map((p, i) => (
-          <div key={i}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "12px 16px",
-              borderTop: i > 0 ? `1px solid ${T.hair}` : "none",
-              background: i === idx && !done ? T.tintSoft : "transparent",
-              opacity: i < idx || done ? 0.55 : 1,
-            }}>
-            <span style={{ color: T.ink, fontWeight: 600, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
-              {(i < idx || done) && <Icon d={IC.check} size={15} color={T.green} />}
-              {label(p)}
-            </span>
-            <span style={{ color: T.soft, fontSize: 14, fontVariantNumeric: "tabular-nums" }}>{p.s / 60} min</span>
-          </div>
-        ))}
+        {phases.map((p, i) => {
+          const past = i < idx || done;
+          const v = valid[i];
+          return (
+            <div key={i}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "12px 16px",
+                borderTop: i > 0 ? `1px solid ${T.hair}` : "none",
+                background: i === idx && !done ? T.tintSoft : "transparent",
+                opacity: past ? 0.65 : 1,
+              }}>
+              <span style={{ color: T.ink, fontWeight: 600, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+                {past && (v === true
+                  ? <Icon d={IC.check} size={15} color={T.green} />
+                  : v === false
+                    ? <span style={{ color: T.soft, fontWeight: 700, fontSize: 14 }}>·</span>
+                    : <Icon d={IC.check} size={15} color={T.soft} />)}
+                {label(p)}
+              </span>
+              <span style={{ color: T.soft, fontSize: 14, fontVariantNumeric: "tabular-nums" }}>{p.s / 60} min</span>
+            </div>
+          );
+        })}
+      </div>
+      <p style={{ fontSize: 12, color: T.faint, margin: "10px 4px 0", textAlign: "center" }}>
+        Verde: fase validada por el micrófono. Punto: se acabó el tiempo sin llegar a la meta.
+      </p>
+    </div>
+  );
+}
+function LiveMetric({ value, target, unit }) {
+  const ok = value >= target;
+  return (
+    <div>
+      <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em", color: ok ? T.green : T.ink, fontVariantNumeric: "tabular-nums" }}>
+        {value} <span style={{ fontSize: 13, fontWeight: 600, color: T.soft }}>/ {target} {unit}</span>
+      </div>
+      <div style={{ height: 5, borderRadius: 99, background: T.track, marginTop: 8, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${Math.min(100, (value / target) * 100)}%`, background: ok ? T.green : T.tint, borderRadius: 99, transition: "width .3s" }} />
       </div>
     </div>
   );
 }
 
-// =================== Niveles ===================
+// =================== Progreso: barra global + niveles + canciones ===================
 const LEVELS = [
   {
     id: "n1", n: "Superviviente", num: "1", meta: "Un acorde nítido",
@@ -1105,8 +1431,8 @@ const LEVELS = [
   },
   {
     id: "n2", n: "Cuatro acordes", num: "2", meta: "Una canción lenta entera",
-    gate: "20 o más CPM en el Reto y el patrón completo a 70 BPM sin parar.",
-    auto: (p) => Object.values(p.bestCpm || {}).some((v) => v >= 20),
+    gate: "Supera el nivel 3 del Reto (20 cambios) y el patrón clásico a 70 BPM sin parar.",
+    auto: (p) => (p.retoLevels && p.retoLevels[3]) || Object.values(p.bestCpm || {}).some((v) => v >= 20),
   },
   {
     id: "n3", n: "Cancionero", num: "3", meta: "Cantar y tocar a la vez",
@@ -1124,24 +1450,79 @@ const LEVELS = [
     auto: null,
   },
 ];
-function Niveles({ progress, onSave }) {
+const SESSION_GOAL = 75; // ~20 horas en sesiones de 15-18 min
+
+function Progreso({ progress, onSave }) {
+  const [playingSong, setPlayingSong] = useState(null);
+
+  const doneLevels = LEVELS.filter((lv) => (lv.auto && lv.auto(progress)) || progress.levels[lv.id]).length;
+  const retoPassed = Object.values(progress.retoLevels || {}).filter(Boolean).length;
+  const sessions = (progress.sessions || []).length;
+  const pctGlobal = Math.round(100 * (
+    0.4 * (doneLevels / LEVELS.length) +
+    0.2 * (retoPassed / RETO_LEVELS.length) +
+    0.4 * (Math.min(sessions, SESSION_GOAL) / SESSION_GOAL)
+  ));
+
   const toggle = (id) => {
     const p = { ...progress, levels: { ...progress.levels, [id]: !progress.levels[id] } };
     onSave(p);
   };
+
+  const play = (song) => {
+    if (playingSong) return;
+    setPlayingSong(song.id);
+    const ms = playSong(song.bars, song.beats);
+    setTimeout(() => setPlayingSong(null), ms + 200);
+  };
+
+  const Row = ({ label, value, max }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+      <span style={{ fontSize: 13, color: T.soft, width: 92, flexShrink: 0 }}>{label}</span>
+      <div style={{ flex: 1, height: 5, borderRadius: 99, background: T.track, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${Math.min(100, (value / max) * 100)}%`, background: T.tint, borderRadius: 99 }} />
+      </div>
+      <span style={{ fontSize: 13, color: T.ink, fontWeight: 600, fontVariantNumeric: "tabular-nums", width: 48, textAlign: "right" }}>
+        {value}/{max}
+      </span>
+    </div>
+  );
+
   let unlocked = true;
+
   return (
     <div>
-      <p style={{ color: T.soft, fontSize: 15, lineHeight: 1.5, margin: "0 4px 16px" }}>
-        Cada nivel tiene una puerta medible: o la pasas o sigues practicando. El Nivel 2 se desbloquea solo con el Reto.
-      </p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {/* Barra de progreso global */}
+      <div style={{
+        background: T.card, borderRadius: 20, border: `1px solid ${T.hair}`,
+        boxShadow: "var(--shadow-card)", padding: "16px 18px", marginBottom: 22,
+      }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>Tu camino</span>
+          <span style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", color: T.tint, fontVariantNumeric: "tabular-nums" }}>{pctGlobal}%</span>
+        </div>
+        <div className="neu-inset" style={{ height: 12, borderRadius: 99, marginTop: 10, overflow: "hidden" }}>
+          <div style={{
+            height: "100%", width: `${pctGlobal}%`, borderRadius: 99,
+            background: `linear-gradient(90deg, ${"var(--tint)"}, ${"var(--green)"})`,
+            transition: "width .6s",
+          }} />
+        </div>
+        <Row label="Niveles" value={doneLevels} max={LEVELS.length} />
+        <Row label="Reto" value={retoPassed} max={RETO_LEVELS.length} />
+        <Row label="Sesiones" value={Math.min(sessions, SESSION_GOAL)} max={SESSION_GOAL} />
+      </div>
+
+      {/* Niveles */}
+      <SectionLabel>Niveles</SectionLabel>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
         {LEVELS.map((lv) => {
           const autoDone = lv.auto ? lv.auto(progress) : false;
           const done = !!progress.levels[lv.id] || autoDone;
           const isCurrent = unlocked && !done;
           const locked = !unlocked;
           if (!done) unlocked = false;
+          const songsHere = SONGS.filter((s) => s.level === Number(lv.num));
           return (
             <div key={lv.id}
               style={{
@@ -1185,13 +1566,61 @@ function Niveles({ progress, onSave }) {
               )}
               {autoDone && (
                 <div style={{ fontSize: 13, color: T.green, fontWeight: 600, marginTop: 8, paddingLeft: 42 }}>
-                  Desbloqueado con tu récord del Reto
+                  Desbloqueado con el Reto
+                </div>
+              )}
+              {songsHere.length > 0 && !locked && (
+                <div style={{ marginTop: 12, paddingLeft: 42, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {songsHere.map((s) => (
+                    <SongCard key={s.id} song={s} playing={playingSong === s.id} onPlay={() => play(s)} />
+                  ))}
                 </div>
               )}
             </div>
           );
         })}
       </div>
+
+      <p style={{ fontSize: 12, color: T.faint, textAlign: "center", lineHeight: 1.5, margin: "0 12px" }}>
+        Las canciones son tradicionales o progresiones clásicas. Para letras y más temas, busca los acordes en Ukutabs.
+      </p>
+    </div>
+  );
+}
+function SongCard({ song, playing, onPlay }) {
+  const strumName = (STRUM_PATTERNS.find((p) => p.id === song.strum) || {}).n || "";
+  return (
+    <div style={{ background: T.fill, borderRadius: 14, padding: "10px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{song.n}</div>
+          <div style={{ fontSize: 11, color: T.soft, fontWeight: 600 }}>
+            {song.origen} · {song.beats}/4 · Ritmo {strumName}
+          </div>
+        </div>
+        <button onClick={onPlay} disabled={playing}
+          style={{
+            width: 34, height: 34, borderRadius: 99, flexShrink: 0,
+            border: "none", background: playing ? T.track : T.tint,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+          className="active:scale-[0.94] transition-transform">
+          <Icon d={IC.play} size={13} filled color={playing ? T.soft : "#fff"} />
+        </button>
+      </div>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", margin: "8px 0 6px" }}>
+        {song.bars.map((ch, i) => (
+          <button key={i} onClick={() => strumChord(ch)}
+            style={{
+              minWidth: 38, padding: "5px 6px", borderRadius: 8, border: `1px solid ${T.hair}`,
+              background: T.card, fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: T.tint,
+            }}
+            className="active:scale-[0.94] transition-transform">
+            {ch}
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 12, color: T.soft, lineHeight: 1.45 }}>{song.tip}</div>
     </div>
   );
 }
@@ -1203,7 +1632,7 @@ const TABS = [
   { id: "rasgueo", label: "Ritmo" },
   { id: "reto", label: "Reto" },
   { id: "rutina", label: "Rutina" },
-  { id: "niveles", label: "Nivel" },
+  { id: "progreso", label: "Progreso" },
 ];
 
 export default function App() {
@@ -1218,7 +1647,6 @@ export default function App() {
       className="w-full flex justify-center">
       <div className="w-full" style={{ maxWidth: 480 }}>
 
-        {/* Cabecera translúcida fija */}
         <div style={{
           position: "sticky", top: 0, zIndex: 20,
           background: T.headerBg,
@@ -1232,12 +1660,13 @@ export default function App() {
           </h1>
           <p style={{ color: T.soft, fontSize: 13, margin: "3px 0 12px" }}>15 minutos al día · progreso medible</p>
 
-          <div style={{ background: T.track, borderRadius: 11, padding: 2, display: "flex" }}>
+          <div style={{ background: T.track, borderRadius: 11, padding: 2, display: "flex", gap: 2 }}>
             {TABS.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)}
                 style={{
-                  flex: 1, border: "none", borderRadius: 9, padding: "7px 0",
-                  fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
+                  flex: 1, minWidth: 0, border: "none", borderRadius: 9, padding: "7px 1px",
+                  whiteSpace: "nowrap", letterSpacing: "-0.01em",
+                  fontFamily: FONT, fontSize: 12, fontWeight: 600,
                   color: tab === t.id ? T.ink : T.soft,
                   background: tab === t.id ? T.segActive : "transparent",
                   boxShadow: tab === t.id ? "var(--shadow-seg)" : "none",
@@ -1249,14 +1678,13 @@ export default function App() {
           </div>
         </div>
 
-        {/* Contenido */}
         <div style={{ padding: "18px 16px 40px" }}>
           {tab === "afinar" && <Afinador />}
           {tab === "acordes" && <Acordes />}
           {tab === "rasgueo" && <Rasgueo />}
           {tab === "reto" && <Reto progress={progress} onSave={handleSave} />}
-          {tab === "rutina" && <Rutina />}
-          {tab === "niveles" && <Niveles progress={progress} onSave={handleSave} />}
+          {tab === "rutina" && <Rutina progress={progress} onSave={handleSave} />}
+          {tab === "progreso" && <Progreso progress={progress} onSave={handleSave} />}
 
           <p style={{ color: T.faint, fontSize: 12, textAlign: "center", marginTop: 28 }}>
             Lento y limpio gana a rápido y sucio.
