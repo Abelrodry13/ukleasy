@@ -1,1 +1,79 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+
+  /* Claro */
+  --bg: #F5F5F7;
+  --card: #FFFFFF;
+  --ink: #1D1D1F;
+  --soft: #86868B;
+  --hair: rgba(60, 60, 67, 0.12);
+  --track: #E9E9EB;
+  --fill: #F2F2F7;
+  --tint: #0A84FF;
+  --tint-soft: rgba(10, 132, 255, 0.10);
+  --green: #34C759;
+  --green-soft: rgba(52, 199, 89, 0.12);
+  --red: #FF3B30;
+  --seg-active: #FFFFFF;
+  --header-bg: rgba(245, 245, 247, 0.82);
+  --faint: #AEAEB2;
+  --string: #C7C7CC;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-seg: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --card: #1C1C1E;
+    --ink: #F5F5F7;
+    --soft: #98989F;
+    --hair: rgba(84, 84, 88, 0.48);
+    --track: #2C2C2E;
+    --fill: #2C2C2E;
+    --tint: #0A84FF;
+    --tint-soft: rgba(10, 132, 255, 0.20);
+    --green: #30D158;
+    --green-soft: rgba(48, 209, 88, 0.18);
+    --red: #FF453A;
+    --seg-active: #636366;
+    --header-bg: rgba(0, 0, 0, 0.78);
+    --faint: #636366;
+    --string: #48484A;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-seg: 0 1px 4px rgba(0, 0, 0, 0.45);
+  }
+}
+
+html, body { background: var(--bg); }
+
+/* ---- Neumorfismo: solo controles-instrumento ---- */
+:root {
+  --neu-bg: #F0F0F3;
+  --neu-hi: rgba(255, 255, 255, 0.95);
+  --neu-lo: rgba(174, 174, 192, 0.42);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --neu-bg: #1C1C1E;
+    --neu-hi: rgba(255, 255, 255, 0.055);
+    --neu-lo: rgba(0, 0, 0, 0.65);
+  }
+}
+.neu {
+  background: var(--neu-bg);
+  border: none;
+  box-shadow: -4px -4px 10px var(--neu-hi), 5px 5px 12px var(--neu-lo);
+}
+.neu-sm {
+  background: var(--neu-bg);
+  border: none;
+  box-shadow: -2px -2px 6px var(--neu-hi), 3px 3px 7px var(--neu-lo);
+}
+.neu-inset {
+  background: var(--neu-bg);
+  border: none;
+  box-shadow: inset 3px 3px 7px var(--neu-lo), inset -3px -3px 7px var(--neu-hi);
+}

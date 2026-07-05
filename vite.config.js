@@ -9,14 +9,14 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg'],
+      includeAssets: ['apple-touch-icon.png'],
       manifest: {
         name: 'Ukelele Fácil',
         short_name: 'Ukelele',
         description: 'Aprende ukelele en 15 min al día: afinador con micro, acordes, rasgueo, retos y niveles.',
         lang: 'es',
-        theme_color: '#FF6B4A',
-        background_color: '#FBF6EE',
+        theme_color: '#F5F5F7',
+        background_color: '#F5F5F7',
         display: 'standalone',
         orientation: 'portrait',
         icons: [
