@@ -2050,24 +2050,110 @@ function SongCard({ song, playing, onPlay }) {
 }
 
 // =================== Onboarding ===================
+// Ilustraciones dedicadas (no los iconos genéricos de la UI)
+function IllustUke() {
+  return (
+    <svg width="86" height="86" viewBox="0 0 86 86">
+      <ellipse cx="43" cy="56" rx="17" ry="17" fill="var(--tint-soft)" stroke="var(--tint)" strokeWidth="2" />
+      <ellipse cx="43" cy="40" rx="12" ry="12" fill="var(--tint-soft)" stroke="var(--tint)" strokeWidth="2" />
+      <circle cx="43" cy="53" r="6" fill="var(--card)" stroke="var(--tint)" strokeWidth="2" />
+      <rect x="40" y="10" width="6" height="22" rx="2" fill="var(--tint)" />
+      <rect x="37.5" y="5" width="11" height="9" rx="3" fill="var(--tint)" />
+      <g stroke="var(--ink)" strokeWidth="1" opacity="0.55">
+        <line x1="41" y1="12" x2="41" y2="62" />
+        <line x1="42.4" y1="12" x2="42.4" y2="62" />
+        <line x1="43.8" y1="12" x2="43.8" y2="62" />
+        <line x1="45.2" y1="12" x2="45.2" y2="62" />
+      </g>
+      <rect x="37" y="63" width="12" height="3.5" rx="1.5" fill="var(--tint)" />
+      <g fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round">
+        <path d="M63 30c3-2 3-6 0-8" />
+        <path d="M67 34c5-4 5-12 0-16" />
+      </g>
+      <g fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round">
+        <path d="M23 30c-3-2-3-6 0-8" />
+        <path d="M19 34c-5-4-5-12 0-16" />
+      </g>
+    </svg>
+  );
+}
+function IllustRing() {
+  const R = 26, C = 2 * Math.PI * R;
+  return (
+    <svg width="86" height="86" viewBox="0 0 86 86">
+      <circle cx="43" cy="43" r={R} fill="none" stroke="var(--track)" strokeWidth="7" />
+      <circle cx="43" cy="43" r={R} fill="none" stroke="var(--tint)" strokeWidth="7" strokeLinecap="round"
+        strokeDasharray={C} strokeDashoffset={C * 0.3} transform="rotate(-90 43 43)" />
+      <path d="M39 34.5v17l13-8.5z" fill="var(--tint)" />
+      <g fill="var(--green)">
+        <circle cx="70" cy="22" r="3" />
+        <circle cx="76" cy="34" r="2.2" />
+      </g>
+      <path d="M64 55l3.5 3.5L74 51" fill="none" stroke="var(--green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      <g fill="none" stroke="var(--soft)" strokeWidth="1.6" strokeLinecap="round" opacity="0.7">
+        <path d="M12 28h7 M9 36h10 M12 44h7" />
+      </g>
+    </svg>
+  );
+}
+function IllustFlame() {
+  return (
+    <svg width="86" height="86" viewBox="0 0 86 86">
+      <path d="M43 12c4 10-4 13-4 21a8.5 8.5 0 0 0 17 1.5C60.5 39 66 44.5 66 54a23 23 0 0 1-46 0c0-10 6.5-15 10-22 2.4 4.4 5.4 6 5.4 6C33.5 27 37.5 20 43 12z"
+        fill="#FF9500" opacity="0.9" />
+      <path d="M43 34c2.5 6-2.5 8-2.5 13a8 8 0 0 0 16 .8C58 51 60 54 60 59a17 17 0 0 1-34 0c0-6 4-9 6-13 1.5 2.7 3.3 3.7 3.3 3.7C34.5 43 39.5 39 43 34z"
+        fill="#FFCC00" />
+      <g fill="none" stroke="var(--tint)" strokeWidth="2.2" strokeLinecap="round">
+        <path d="M14 20v10 M9 25h10" />
+      </g>
+      <g fill="none" stroke="var(--green)" strokeWidth="2.2" strokeLinecap="round">
+        <path d="M70 18l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" fill="var(--green)" stroke="none" opacity="0.85" />
+      </g>
+    </svg>
+  );
+}
+
 const INTRO = [
   {
-    icon: "music", title: "Tu ukelele, en corto",
-    body: "Cuatro cuerdas afinadas G, C, E, A. La primera pestaña te ayuda a afinarlo con el micrófono. Sujétalo contra el antebrazo, sin apretar: el ukelele casi se sostiene solo.",
+    Illust: IllustUke, title: "Cuatro cuerdas y tú",
+    body: "Sol, Do, Mi, La: así se llaman tus nuevas compañeras. En la primera pestaña las afinas con el micrófono, escuchando de verdad. Y un secreto antes de empezar: no lo agarres fuerte. El ukelele se toca relajado, apoyado en el antebrazo, como quien no quiere la cosa.",
   },
   {
-    icon: "clock", title: "El método: 15 minutos al día",
-    body: "Corto y diario gana a largo y esporádico. La Rutina te guía por fases y el micrófono valida que las cumples. El Reto mide tus cambios por minuto. Todo suma a tu racha y tus 20 horas.",
+    Illust: IllustRing, title: "15 minutos que sí cumplen",
+    body: "Nada de sesiones maratonianas que se abandonan el jueves. Aquí tocas un ratito cada día: la Rutina te lleva fase a fase, el micrófono comprueba que lo haces, y cada minuto alimenta tu racha. En unas semanas estarás tocando canciones de verdad.",
   },
   {
-    icon: "flame", title: "Dos verdades incómodas",
-    body: "Las yemas duelen las dos primeras semanas: es normal y se pasa. Y sonarás mal al principio: también es normal. Lento y limpio gana a rápido y sucio. Nos vemos en el nivel 8.",
+    Illust: IllustFlame, title: "Te aviso de dos cosas",
+    body: "Las yemas te van a doler la primera semana o dos. Nos pasa a todos, y un buen día simplemente deja de pasar. Y sonarás regular al principio: bienvenido al club, nadie nació rasgueando. Tú ve lento y limpio. Nos vemos en el nivel 8.",
   },
 ];
 function Onboarding({ onDone }) {
   const [i, setI] = useState(0);
+  const [dir, setDir] = useState("right");
+  const touch = useRef(null);
   const s = INTRO[i];
   const last = i === INTRO.length - 1;
+
+  const go = (n) => {
+    if (n < 0 || n >= INTRO.length) return;
+    setDir(n > i ? "right" : "left");
+    setI(n);
+  };
+  const onTouchStart = (e) => {
+    touch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  };
+  const onTouchEnd = (e) => {
+    const t = touch.current;
+    if (!t) return;
+    touch.current = null;
+    const dx = e.changedTouches[0].clientX - t.x;
+    const dy = e.changedTouches[0].clientY - t.y;
+    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) go(i + 1);
+    else go(i - 1);
+  };
+
+  const Illust = s.Illust;
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 50,
@@ -2075,37 +2161,47 @@ function Onboarding({ onDone }) {
       backdropFilter: "saturate(180%) blur(24px)",
       WebkitBackdropFilter: "saturate(180%) blur(24px)",
       display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
-    }}>
-      <div key={i} className="tab-in-right" style={{
+    }}
+      onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+      <div key={i} className={dir === "right" ? "tab-in-right" : "tab-in-left"} style={{
         background: T.card, borderRadius: 24, border: `1px solid ${T.hair}`,
-        boxShadow: "0 20px 60px rgba(0,0,0,0.18)", padding: "28px 24px",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.18)", padding: "26px 24px",
         maxWidth: 340, width: "100%", textAlign: "center",
       }}>
         <div className="neu" style={{
-          width: 64, height: 64, borderRadius: 99, margin: "0 auto 16px",
+          width: 96, height: 96, borderRadius: 28, margin: "0 auto 16px",
           display: "flex", alignItems: "center", justifyContent: "center",
         }}>
-          <Icon d={IC[s.icon]} size={28} color={T.tint} />
+          <Illust />
         </div>
         <div style={{ fontSize: 21, fontWeight: 700, letterSpacing: "-0.02em", color: T.ink, marginBottom: 8 }}>{s.title}</div>
-        <div style={{ fontSize: 14.5, color: T.soft, lineHeight: 1.55, marginBottom: 20 }}>{s.body}</div>
-        <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 18 }}>
+        <div style={{ fontSize: 14.5, color: T.soft, lineHeight: 1.55, marginBottom: 18 }}>{s.body}</div>
+        <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 16 }}>
           {INTRO.map((_, j) => (
-            <span key={j} style={{
-              width: j === i ? 20 : 7, height: 7, borderRadius: 99,
-              background: j === i ? T.tint : T.track, transition: "all .25s",
-            }} />
+            <button key={j} onClick={() => go(j)}
+              style={{
+                width: j === i ? 20 : 7, height: 7, borderRadius: 99, border: "none", padding: 0,
+                background: j === i ? T.tint : T.track, transition: "all .25s",
+              }} />
           ))}
         </div>
-        <Button onClick={() => (last ? onDone() : setI(i + 1))} style={{ width: "100%", padding: "13px 0" }}>
-          {last ? "A tocar" : "Siguiente"}
-        </Button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {i > 0 && (
+            <Button kind="gray" onClick={() => go(i - 1)} style={{ padding: "13px 18px" }}>
+              <span style={{ display: "inline-block", transform: "rotate(180deg)" }}><Icon d={IC.chev} size={14} /></span>
+            </Button>
+          )}
+          <Button onClick={() => (last ? onDone() : go(i + 1))} style={{ flex: 1, padding: "13px 0" }}>
+            {last ? "A tocar" : "Siguiente"}
+          </Button>
+        </div>
         {!last && (
           <button onClick={onDone}
             style={{ marginTop: 10, fontFamily: FONT, fontSize: 13, fontWeight: 600, color: T.soft, background: "transparent", border: "none" }}>
             Saltar
           </button>
         )}
+        <div style={{ fontSize: 11, color: T.faint, marginTop: 8 }}>Desliza para moverte entre pantallas</div>
       </div>
     </div>
   );
