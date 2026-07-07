@@ -77,3 +77,19 @@ html, body { background: var(--bg); }
   border: none;
   box-shadow: inset 3px 3px 7px var(--neu-lo), inset -3px -3px 7px var(--neu-hi);
 }
+
+/* ---- Pestañas deslizables + swipe ---- */
+.tabs-scroll {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.tabs-scroll::-webkit-scrollbar { display: none; }
+
+@keyframes tabInRight { from { opacity: 0; transform: translateX(22px); } to { opacity: 1; transform: none; } }
+@keyframes tabInLeft  { from { opacity: 0; transform: translateX(-22px); } to { opacity: 1; transform: none; } }
+.tab-in-right { animation: tabInRight .22s ease; }
+.tab-in-left  { animation: tabInLeft .22s ease; }

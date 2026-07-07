@@ -83,18 +83,70 @@ function click(ctx, t, accent = false) {
 }
 
 // ---- Progreso persistente ----
-const DEFAULT_PROGRESS = { bestCpm: {}, levels: {}, history: [], retoLevels: {}, sessions: [] };
+const DEFAULT_PROGRESS = { bestCpm: {}, levels: {}, history: [], retoLevels: {}, sessions: [], practiceSec: 0, appSec: 0, practiceDays: {}, calibration: null, reminder: { enabled: false, time: "19:00", last: null }, ear: { ok: 0, total: 0, streak: 0, best: 0 } };
 let memProgress = { ...DEFAULT_PROGRESS };
 async function loadProgress() {
   try {
     const raw = localStorage.getItem("uke-progress");
-    if (raw) return { ...DEFAULT_PROGRESS, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        ...DEFAULT_PROGRESS, ...parsed,
+        reminder: { ...DEFAULT_PROGRESS.reminder, ...(parsed.reminder || {}) },
+        ear: { ...DEFAULT_PROGRESS.ear, ...(parsed.ear || {}) },
+      };
+    }
   } catch (e) { /* sin storage: memoria */ }
   return memProgress;
 }
 async function saveProgress(p) {
   memProgress = p;
   try { localStorage.setItem("uke-progress", JSON.stringify(p)); } catch (e) { /* memoria */ }
+}
+
+// ---- Tiempo, días y racha ----
+function addPractice(p, sec) {
+  const day = new Date().toISOString().slice(0, 10);
+  const pd = { ...(p.practiceDays || {}) };
+  pd[day] = (pd[day] || 0) + sec;
+  return { ...p, practiceSec: (p.practiceSec || 0) + sec, practiceDays: pd };
+}
+function streakDays(pd = {}) {
+  let n = 0;
+  const d = new Date();
+  const today = d.toISOString().slice(0, 10);
+  if (!pd[today]) d.setDate(d.getDate() - 1);
+  for (;;) {
+    const k = d.toISOString().slice(0, 10);
+    if (pd[k] > 0) { n++; d.setDate(d.getDate() - 1); } else break;
+  }
+  return n;
+}
+function notifyPractice() {
+  const opts = { body: "Tu ukelele te espera. Cinco minutos protegen la racha.", icon: "/icon-192.png" };
+  try {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.ready
+        .then((r) => r.showNotification("Ukelele Fácil", opts))
+        .catch(() => { try { new Notification("Ukelele Fácil", opts); } catch (e) { /* nada */ } });
+      return;
+    }
+    new Notification("Ukelele Fácil", opts);
+  } catch (e) { /* sin notificaciones */ }
+}
+function buzz(pattern) {
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) { /* sin háptica */ }
+}
+function calThresholds(p) {
+  const c = (p && p.calibration) || {};
+  return {
+    rmsGate: Math.min(0.05, Math.max(0.008, c.rmsGate || 0.012)),
+    totalGate: Math.min(0.02, Math.max(0.002, c.totalGate || 0.004)),
+  };
+}
+function fmtTime(sec = 0) {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h} h ${m} m` : `${m} min`;
 }
 
 // ---- Iconos (trazo fino, 1.8px) ----
@@ -116,6 +168,12 @@ const IC = {
   check: "M5 12.5l4.5 4.5L19 7.5",
   lock: "M7 11V8a5 5 0 0 1 10 0v3 M6 11h12v9H6z",
   chev: "M9 6l6 6-6 6",
+  flame: "M12 3c1 3-1 4-1 6a2.5 2.5 0 0 0 5 .5C17.5 11 19 12.5 19 15a7 7 0 0 1-14 0c0-3 2-4.5 3-6.5.7 1.3 1.6 1.8 1.6 1.8C9.5 7.5 10.5 5.5 12 3z",
+  clock: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z M12 7v5l3.5 2",
+  star: "M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z",
+  trophy: "M8 4h8v6a4 4 0 0 1-8 0z M8 5H5a3 3 0 0 0 3 4 M16 5h3a3 3 0 0 1-3 4 M12 14v3 M9 20h6 M12 17v3",
+  music: "M9 18V6l10-2v12 M9 18a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z M19 16a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z",
+  ear: "M6 10a6 6 0 1 1 12 0c0 3-2 3.5-2.6 5.4A3.6 3.6 0 0 1 12 19 M9.5 10a2.5 2.5 0 0 1 5 0c0 1.5-1.2 2-1.7 3",
 };
 
 // ---- Componentes base ----
@@ -184,8 +242,10 @@ function autoCorrelate(buf, sampleRate) {
   return f;
 }
 
-function Afinador() {
+function Afinador({ progress, onSave }) {
   const [last, setLast] = useState(null);
+  const [calibrating, setCalibrating] = useState(false);
+  const [calPct, setCalPct] = useState(0);
   const [micOn, setMicOn] = useState(false);
   const [micErr, setMicErr] = useState(null);
   const [reading, setReading] = useState(null);
@@ -356,6 +416,81 @@ function Afinador() {
       <p style={{ fontSize: 13, color: T.soft, margin: "14px 4px 0", lineHeight: 1.5 }}>
         Si usas el micrófono, afina en silencio: los tonos del altavoz interfieren en la lectura.
       </p>
+
+      <div style={{ marginTop: 22 }}>
+        <SectionLabel>Calibración del micrófono</SectionLabel>
+        <div style={{
+          background: T.card, borderRadius: 16, border: `1px solid ${T.hair}`,
+          boxShadow: "var(--shadow-card)", padding: "14px 16px",
+        }}>
+          <div style={{ fontSize: 13, color: T.soft, lineHeight: 1.5, marginBottom: 10 }}>
+            Mide el ruido de tu habitación durante 8 segundos para ajustar la sensibilidad del Reto y la Rutina.
+            {progress.calibration
+              ? ` Calibrado el ${progress.calibration.date}.`
+              : " Aún sin calibrar: se usan valores por defecto."}
+          </div>
+          {calibrating ? (
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: T.tint, marginBottom: 8, textAlign: "center" }}>
+                Mantén silencio…
+              </div>
+              <div style={{ height: 6, borderRadius: 99, background: T.track, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${calPct}%`, background: T.tint, borderRadius: 99, transition: "width .2s" }} />
+              </div>
+            </div>
+          ) : (
+            <Button kind="gray" onClick={async () => {
+              stopMic();
+              setCalibrating(true); setCalPct(0);
+              try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                  audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+                });
+                const ctx = getCtx();
+                const srcNode = ctx.createMediaStreamSource(stream);
+                const an = ctx.createAnalyser();
+                an.fftSize = 4096;
+                srcNode.connect(an);
+                const td = new Float32Array(an.fftSize);
+                const fd = new Float32Array(an.frequencyBinCount);
+                let sumRms = 0, sumTotal = 0, frames = 0;
+                const t0 = performance.now();
+                const DUR = 8000;
+                await new Promise((resolve) => {
+                  const step = () => {
+                    const el = performance.now() - t0;
+                    setCalPct(Math.min(100, Math.round((el / DUR) * 100)));
+                    an.getFloatTimeDomainData(td);
+                    let r = 0;
+                    for (let i = 0; i < 2048; i++) r += td[i] * td[i];
+                    sumRms += Math.sqrt(r / 2048);
+                    an.getFloatFrequencyData(fd);
+                    sumTotal += chromaFromFFT(fd, ctx.sampleRate, 4096).total;
+                    frames++;
+                    if (el < DUR) requestAnimationFrame(step); else resolve();
+                  };
+                  step();
+                });
+                stream.getTracks().forEach((t) => t.stop());
+                const avgRms = sumRms / Math.max(1, frames);
+                const avgTotal = sumTotal / Math.max(1, frames);
+                onSave((prev) => ({
+                  ...prev,
+                  calibration: {
+                    rmsGate: Math.min(0.05, Math.max(0.008, avgRms * 5 + 0.006)),
+                    totalGate: Math.min(0.02, Math.max(0.002, avgTotal * 4 + 0.002)),
+                    date: new Date().toISOString().slice(0, 10),
+                  },
+                }));
+                buzz([20, 40, 20]);
+              } catch (e) { /* permiso denegado: sin cambios */ }
+              setCalibrating(false);
+            }} style={{ fontSize: 15, padding: "10px 18px" }}>
+              <Icon d={IC.mic} size={14} /> {progress.calibration ? "Recalibrar" : "Calibrar ahora"}
+            </Button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -395,7 +530,7 @@ function ChordDiagram({ chordKey, big, tint }) {
 }
 
 // =================== Acordes ===================
-function Acordes() {
+function Acordes({ progress, onSave }) {
   const [sel, setSel] = useState("C");
   const c = CHORDS[sel];
   return (
@@ -430,6 +565,8 @@ function Acordes() {
       <div className="grid grid-cols-4 gap-2">
         {MAS.map((k) => <ChordCard key={k} k={k} sel={sel} onClick={() => setSel(k)} />)}
       </div>
+
+      <EarTrainer progress={progress} onSave={onSave} />
     </div>
   );
 }
@@ -446,6 +583,93 @@ function ChordCard({ k, sel, onClick }) {
       <div style={{ fontWeight: 700, fontSize: 15, color: active ? T.tint : T.ink, marginBottom: 2 }}>{k}</div>
       <ChordDiagram chordKey={k} tint={active ? T.tint : undefined} />
     </button>
+  );
+}
+
+// =================== Entrenador de oído ===================
+const EAR_POOL = ["C", "Am", "F", "G7", "G", "Em", "D"];
+function EarTrainer({ progress, onSave }) {
+  const [answer, setAnswer] = useState(null);
+  const [options, setOptions] = useState([]);
+  const [picked, setPicked] = useState(null);
+  const ear = progress.ear || { ok: 0, total: 0, streak: 0, best: 0 };
+
+  const newRound = useCallback(() => {
+    const ans = EAR_POOL[Math.floor(Math.random() * EAR_POOL.length)];
+    const others = EAR_POOL.filter((c) => c !== ans).sort(() => Math.random() - 0.5).slice(0, 3);
+    setAnswer(ans);
+    setOptions([ans, ...others].sort(() => Math.random() - 0.5));
+    setPicked(null);
+    strumChord(ans, false, 0.2);
+  }, []);
+
+  const choose = (k) => {
+    if (picked || !answer) return;
+    setPicked(k);
+    const correct = k === answer;
+    buzz(correct ? [15, 30, 15] : 45);
+    if (!correct) setTimeout(() => strumChord(answer, false, 0.16), 350);
+    onSave((prev) => {
+      const e = { ...(prev.ear || { ok: 0, total: 0, streak: 0, best: 0 }) };
+      e.total += 1;
+      if (correct) { e.ok += 1; e.streak += 1; e.best = Math.max(e.best, e.streak); }
+      else e.streak = 0;
+      return { ...prev, ear: e };
+    });
+    setTimeout(newRound, 1400);
+  };
+
+  return (
+    <div style={{ marginTop: 22 }}>
+      <SectionLabel>Entrena el oído</SectionLabel>
+      <div style={{
+        background: T.card, borderRadius: 16, border: `1px solid ${T.hair}`,
+        boxShadow: "var(--shadow-card)", padding: "14px 16px",
+      }}>
+        <div style={{ fontSize: 13, color: T.soft, lineHeight: 1.5, marginBottom: 12 }}>
+          Suena un acorde: adivina cuál es. Reconocerlos de oído acelera todo lo demás.
+        </div>
+        {!answer ? (
+          <div style={{ textAlign: "center" }}>
+            <Button onClick={newRound} style={{ fontSize: 15, padding: "11px 22px" }}>
+              <Icon d={IC.play} size={14} filled color="#fff" /> Empezar
+            </Button>
+          </div>
+        ) : (
+          <>
+            <div style={{ textAlign: "center", marginBottom: 12 }}>
+              <Button kind="gray" onClick={() => strumChord(answer, false, 0.2)} style={{ fontSize: 14, padding: "9px 18px" }}>
+                <Icon d={IC.reset} size={13} /> Repetir sonido
+              </Button>
+            </div>
+            <div className="grid grid-cols-2 gap-2" style={{ marginBottom: 10 }}>
+              {options.map((k) => {
+                const isAns = k === answer, isPick = k === picked;
+                let bg = T.fill, col = T.ink, bord = T.hair;
+                if (picked) {
+                  if (isAns) { bg = T.greenSoft; col = T.green; bord = T.green; }
+                  else if (isPick) { bg = "rgba(255,59,48,0.10)"; col = T.red; bord = T.red; }
+                }
+                return (
+                  <button key={k} onClick={() => choose(k)}
+                    style={{
+                      borderRadius: 14, padding: "13px 0", border: `1px solid ${bord}`,
+                      background: bg, fontFamily: FONT, fontSize: 17, fontWeight: 700, color: col,
+                      transition: "all .2s",
+                    }}
+                    className="active:scale-[0.97]">
+                    {k} <span style={{ fontSize: 11, fontWeight: 600, color: T.soft }}>{CHORDS[k].es}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 12.5, color: T.soft, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
+              Aciertos {ear.ok}/{ear.total} · Racha {ear.streak} · Mejor {ear.best}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -663,15 +887,15 @@ function Rasgueo() {
 // Solo progresiones de acordes: las progresiones no tienen copyright.
 const SONGS = [
   { id: "martinillo", n: "Martinillo", origen: "Tradicional", level: 1, beats: 4, chords: ["C"], bars: ["C", "C", "C", "C"], strum: "basico", tip: "Toda la canción con Do. Céntrate solo en llevar el ritmo constante." },
-  { id: "tomdooley", n: "Tom Dooley", origen: "Tradicional", level: 1, beats: 4, chords: ["C", "G7"], bars: ["C", "C", "G7", "G7"], strum: "basico", tip: "Un cambio cada dos compases. Prepara el G7 un pulso antes." },
-  { id: "cucaracha", n: "La Cucaracha", origen: "Tradicional", level: 1, beats: 4, chords: ["C", "G7"], bars: ["C", "C", "G7", "G7", "G7", "G7", "C", "C"], strum: "vaiven", tip: "Mismo par de acordes, más rápido. Canta encima cuando salga sola." },
-  { id: "cumple", n: "Cumpleaños feliz", origen: "Tradicional", level: 2, beats: 3, chords: ["C", "F", "G7"], bars: ["C", "G7", "G7", "C", "C", "F", "G7", "C"], strum: "basico", tip: "Va en 3/4: tres golpes abajo por compás, el primero más fuerte." },
-  { id: "estrellita", n: "Estrellita", origen: "Tradicional", level: 2, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "F", "C", "G7"], strum: "basico", tip: "Cuatro compases en bucle. Tu primera canción con tres acordes." },
-  { id: "susanna", n: "Oh! Susanna", origen: "Tradicional", level: 2, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "C", "G7", "C", "C", "F", "G7", "C"], strum: "vaiven", tip: "Estructura de ocho compases, la base de mucho folk y country." },
-  { id: "doowop", n: "El bucle doo-wop", origen: "Progresión clásica", level: 3, beats: 4, chords: ["C", "Am", "F", "G7"], bars: ["C", "Am", "F", "G7"], strum: "clasico", tip: "La progresión de cientos de éxitos pop. Cántale encima cualquier melodía que te suene: probablemente encaje." },
-  { id: "cielito", n: "Cielito Lindo", origen: "Tradicional", level: 3, beats: 3, chords: ["C", "F", "G7"], bars: ["C", "F", "G7", "C"], strum: "basico", tip: "Vals en 3/4 para cantar y tocar a la vez. Ay, ay, ay, ay." },
-  { id: "folk", n: "El bucle folk", origen: "Progresión clásica", level: 4, beats: 4, chords: ["G", "Em", "C", "D"], bars: ["G", "Em", "C", "D"], strum: "pop", tip: "Introduce G, Em y D. Cuando salga limpio, prueba el patrón percusivo." },
-  { id: "sloopjohnb", n: "Sloop John B", origen: "Tradicional", level: 4, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "C", "C", "C", "C", "F", "G7", "C"], strum: "percusivo", tip: "Compases largos sobre Do: perfectos para meter el chuck sin perderte." },
+  { id: "tomdooley", n: "Tom Dooley", origen: "Tradicional", level: 2, beats: 4, chords: ["C", "G7"], bars: ["C", "C", "G7", "G7"], strum: "basico", tip: "Un cambio cada dos compases. Prepara el G7 un pulso antes." },
+  { id: "cucaracha", n: "La Cucaracha", origen: "Tradicional", level: 2, beats: 4, chords: ["C", "G7"], bars: ["C", "C", "G7", "G7", "G7", "G7", "C", "C"], strum: "vaiven", tip: "Mismo par de acordes, más rápido. Canta encima cuando salga sola." },
+  { id: "cumple", n: "Cumpleaños feliz", origen: "Tradicional", level: 3, beats: 3, chords: ["C", "F", "G7"], bars: ["C", "G7", "G7", "C", "C", "F", "G7", "C"], strum: "basico", tip: "Va en 3/4: tres golpes abajo por compás, el primero más fuerte." },
+  { id: "estrellita", n: "Estrellita", origen: "Tradicional", level: 3, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "F", "C", "G7"], strum: "basico", tip: "Cuatro compases en bucle. Tu primera canción con tres acordes." },
+  { id: "susanna", n: "Oh! Susanna", origen: "Tradicional", level: 3, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "C", "G7", "C", "C", "F", "G7", "C"], strum: "vaiven", tip: "Estructura de ocho compases, la base de mucho folk y country." },
+  { id: "doowop", n: "El bucle doo-wop", origen: "Progresión clásica", level: 4, beats: 4, chords: ["C", "Am", "F", "G7"], bars: ["C", "Am", "F", "G7"], strum: "clasico", tip: "La progresión de cientos de éxitos pop. Cántale encima cualquier melodía que te suene: probablemente encaje." },
+  { id: "cielito", n: "Cielito Lindo", origen: "Tradicional", level: 4, beats: 3, chords: ["C", "F", "G7"], bars: ["C", "F", "G7", "C"], strum: "basico", tip: "Vals en 3/4 para cantar y tocar a la vez. Ay, ay, ay, ay." },
+  { id: "sloopjohnb", n: "Sloop John B", origen: "Tradicional", level: 5, beats: 4, chords: ["C", "F", "G7"], bars: ["C", "C", "C", "C", "C", "F", "G7", "C"], strum: "percusivo", tip: "Compases largos sobre Do: perfectos para meter el chuck sin perderte." },
+  { id: "folk", n: "El bucle folk", origen: "Progresión clásica", level: 6, beats: 4, chords: ["G", "Em", "C", "D"], bars: ["G", "Em", "C", "D"], strum: "pop", tip: "Introduce G, Em y D. Cuando salga limpio, prueba el patrón percusivo." },
 ];
 
 function strumAt(ctx, chordKey, t, vol = 0.16, up = false) {
@@ -689,12 +913,16 @@ function playSong(bars, beats, bpm = 96) {
   return bars.length * beats * spb * 1000;
 }
 
-// =================== Reto (detección por micrófono, con niveles) ===================
+// =================== Reto: 8 niveles ===================
 const RETO_LEVELS = [
-  { lv: 1, n: "Iniciación", meta: 12, pares: [["C", "Am"]] },
-  { lv: 2, n: "Soltura", meta: 16, pares: [["C", "F"], ["Am", "G7"]] },
-  { lv: 3, n: "El cruce", meta: 20, pares: [["F", "G7"]] },
-  { lv: 4, n: "Ciclo completo", meta: 24, ciclo: ["C", "Am", "F", "G7"] },
+  { lv: 1, n: "Iniciación", meta: 10, pares: [["C", "Am"]] },
+  { lv: 2, n: "Primer salto", meta: 14, pares: [["C", "F"]] },
+  { lv: 3, n: "Soltura", meta: 16, pares: [["Am", "G7"]] },
+  { lv: 4, n: "El cruce", meta: 18, pares: [["F", "G7"]] },
+  { lv: 5, n: "Ciclo pop", meta: 20, ciclo: ["C", "Am", "F", "G7"] },
+  { lv: 6, n: "Nuevos aires", meta: 18, pares: [["G", "Em"]] },
+  { lv: 7, n: "Cruzadas", meta: 20, pares: [["C", "D"], ["Em", "D"]] },
+  { lv: 8, n: "Gran ciclo", meta: 24, ciclo: ["G", "Em", "C", "D"] },
 ];
 const CHORD_PCS = { C: [0, 4, 7], Am: [9, 0, 4], F: [5, 9, 0], G7: [7, 11, 2, 5], G: [7, 11, 2], Em: [4, 7, 11], D: [2, 6, 9] };
 function chromaFromFFT(freqData, sampleRate, fftSize) {
@@ -721,7 +949,6 @@ function chordSimilarity(chroma, chord) {
   pcs.forEach((pc) => { dot += chroma[pc]; });
   return dot / (norm * Math.sqrt(pcs.length));
 }
-// Devuelve el mejor candidato entre varios acordes, o null
 function detectChord(chroma, candidates) {
   let best = null, bestS = -1, second = -1;
   candidates.forEach((ch) => {
@@ -751,16 +978,35 @@ function Reto({ progress, onSave }) {
   const streamRef = useRef(null);
   const analyserRef = useRef(null);
   const countRef = useRef(0);
+  const leftRef = useRef(60);
+  const initRef = useRef(false);
   const stableRef = useRef({ chord: null, frames: 0 });
   const currentRef = useRef(null);
   const lastCountT = useRef(0);
   const noiseRef = useRef(1e9);
+  const levelPillRefs = useRef({});
 
   const level = RETO_LEVELS[lvIdx];
   const candidates = level.ciclo || level.pares[Math.min(subIdx, level.pares.length - 1)];
-  const key = level.ciclo ? "ciclo" : candidates.join("-");
+  const key = candidates.join("-");
   const best = progress.bestCpm[key] || 0;
   const isUnlocked = (i) => i === 0 || !!passed[RETO_LEVELS[i - 1].lv];
+
+  useEffect(() => {
+    const el = levelPillRefs.current[lvIdx];
+    if (el) el.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+  }, [lvIdx]);
+
+  // Al cargar el progreso guardado, saltar al primer nivel pendiente (solo una vez)
+  useEffect(() => {
+    if (initRef.current) return;
+    const rl = progress.retoLevels || {};
+    if (Object.values(rl).some(Boolean)) {
+      initRef.current = true;
+      const fo = RETO_LEVELS.findIndex((l) => !rl[l.lv]);
+      setLvIdx(fo === -1 ? RETO_LEVELS.length - 1 : fo);
+    }
+  }, [progress.retoLevels]);
 
   const stopMic = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -776,17 +1022,22 @@ function Reto({ progress, onSave }) {
     setRunning(false);
     setResult(finalCount);
     click(getCtx(), getCtx().currentTime, true);
-    const p = { ...progress, bestCpm: { ...progress.bestCpm }, retoLevels: { ...(progress.retoLevels || {}) } };
-    if (finalCount > (p.bestCpm[key] || 0)) p.bestCpm[key] = finalCount;
-    if (finalCount >= level.meta) p.retoLevels[level.lv] = true;
-    p.history = [...(p.history || []), { key, cpm: finalCount, date: new Date().toISOString().slice(0, 10) }].slice(-50);
-    onSave(p);
-  }, [progress, key, level, onSave, stopMic]);
+    buzz(finalCount >= level.meta ? [30, 50, 30, 50, 90] : 45);
+    onSave((prev) => {
+      let p = addPractice(prev, 60);
+      p = { ...p, bestCpm: { ...p.bestCpm }, retoLevels: { ...(p.retoLevels || {}) } };
+      if (finalCount > (p.bestCpm[key] || 0)) p.bestCpm[key] = finalCount;
+      if (finalCount >= level.meta) p.retoLevels[level.lv] = true;
+      p.history = [...(p.history || []), { key, cpm: finalCount, date: new Date().toISOString().slice(0, 10) }].slice(-50);
+      return p;
+    });
+  }, [key, level, onSave, stopMic]);
 
   const addChange = useCallback(() => {
     countRef.current += 1;
     setCount(countRef.current);
     click(getCtx(), getCtx().currentTime, false);
+    buzz(15);
   }, []);
 
   const startMic = async () => {
@@ -805,6 +1056,7 @@ function Reto({ progress, onSave }) {
     stableRef.current = { chord: null, frames: 0 };
     currentRef.current = null;
 
+    const gates = calThresholds(progress);
     const freqData = new Float32Array(analyser.frequencyBinCount);
     const cands = candidates.slice();
     const loop = () => {
@@ -812,7 +1064,7 @@ function Reto({ progress, onSave }) {
       analyserRef.current.getFloatFrequencyData(freqData);
       const { chroma, total } = chromaFromFFT(freqData, ctx.sampleRate, analyser.fftSize);
       noiseRef.current = Math.min(noiseRef.current * 1.002, total || noiseRef.current);
-      const loud = total > Math.max(noiseRef.current * 3, 0.004);
+      const loud = total > Math.max(noiseRef.current * 3, gates.totalGate);
 
       const cand = loud ? detectChord(chroma, cands) : null;
       const st = stableRef.current;
@@ -845,12 +1097,12 @@ function Reto({ progress, onSave }) {
         setManual(true);
       }
     }
-    setResult(null); setCount(0); countRef.current = 0; setLeft(60); setRunning(true);
+    setResult(null); setCount(0); countRef.current = 0;
+    leftRef.current = 60; setLeft(60); setRunning(true);
     tick.current = setInterval(() => {
-      setLeft((l) => {
-        if (l <= 1) { finish(countRef.current); return 0; }
-        return l - 1;
-      });
+      leftRef.current -= 1;
+      setLeft(leftRef.current);
+      if (leftRef.current <= 0) finish(countRef.current);
     }, 1000);
   };
 
@@ -872,19 +1124,21 @@ function Reto({ progress, onSave }) {
   return (
     <div>
       <p style={{ color: T.soft, fontSize: 15, lineHeight: 1.5, margin: "0 4px 16px" }}>
-        Cambios por minuto detectados con el micrófono. Supera la meta de cada nivel para desbloquear el siguiente.
+        Cambios por minuto detectados con el micrófono. Ocho niveles: supera la meta de cada uno para desbloquear el
+        siguiente.
       </p>
 
-      {/* Niveles del reto */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      {/* Niveles del reto: deslizable */}
+      <div className="tabs-scroll" style={{ marginBottom: 16 }}>
         {RETO_LEVELS.map((l, i) => {
           const open = isUnlocked(i);
           const done = !!passed[l.lv];
           const active = i === lvIdx;
           return (
-            <button key={l.lv} onClick={() => { if (open && !running) { setLvIdx(i); setSubIdx(0); setResult(null); } }}
+            <button key={l.lv} ref={(el) => { levelPillRefs.current[i] = el; }}
+              onClick={() => { if (open && !running) { setLvIdx(i); setSubIdx(0); setResult(null); } }}
               style={{
-                flex: 1, borderRadius: 14, padding: "9px 2px", fontFamily: FONT,
+                flex: "0 0 auto", minWidth: "23%", borderRadius: 14, padding: "9px 10px", fontFamily: FONT,
                 background: active ? T.tintSoft : T.card,
                 border: `1px solid ${active ? T.tint : done ? T.green : T.hair}`,
                 opacity: open ? 1 : 0.45, transition: "all .2s",
@@ -897,13 +1151,12 @@ function Reto({ progress, onSave }) {
                 {done ? <Icon d={IC.check} size={13} color={T.green} /> : !open ? <Icon d={IC.lock} size={12} color={T.soft} /> : null}
                 {l.lv}
               </div>
-              <div style={{ fontSize: 10, color: T.soft, fontWeight: 600, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.n}</div>
+              <div style={{ fontSize: 10, color: T.soft, fontWeight: 600, marginTop: 1, whiteSpace: "nowrap" }}>{l.n}</div>
             </button>
           );
         })}
       </div>
 
-      {/* Sub-pareja si el nivel tiene varias */}
       {!level.ciclo && level.pares.length > 1 && (
         <div style={{ background: T.track, borderRadius: 12, padding: 2, display: "flex", marginBottom: 16 }}>
           {level.pares.map((p, i) => (
@@ -922,7 +1175,6 @@ function Reto({ progress, onSave }) {
         </div>
       )}
 
-      {/* Diagramas de los acordes en juego */}
       <div style={{ display: "flex", justifyContent: "center", gap: level.ciclo ? 12 : 34, marginBottom: 16 }}>
         {candidates.map((k) => (
           <div key={k} style={{ width: level.ciclo ? 66 : 86, display: "flex", flexDirection: "column", alignItems: "center" }}>
@@ -967,7 +1219,7 @@ function Reto({ progress, onSave }) {
               <Icon d={IC.mic} size={17} /> {heard ? `Oigo ${heard}` : "Escuchando…"}
             </div>
             <div style={{ fontSize: 13, color: T.soft, marginTop: 4 }}>
-              {level.ciclo ? "Recorre el ciclo C, Am, F, G7 en orden." : "Rasguea cada acorde dos o tres veces antes de cambiar."}
+              {level.ciclo ? `Recorre el ciclo ${level.ciclo.join(", ")} en orden.` : "Rasguea cada acorde dos o tres veces antes de cambiar."}
             </div>
           </div>
         )
@@ -992,7 +1244,7 @@ function Reto({ progress, onSave }) {
           </div>
           <div style={{ fontSize: 13, color: T.soft, marginTop: 2 }}>
             {result >= level.meta
-              ? (level.lv < 4 ? "Siguiente nivel desbloqueado." : "Has completado todos los niveles del reto.")
+              ? (level.lv < RETO_LEVELS.length ? "Siguiente nivel desbloqueado." : "Has completado todos los niveles del reto.")
               : `La meta son ${level.meta}. Lento y limpio gana a rápido y sucio.`}
           </div>
         </div>
@@ -1011,7 +1263,7 @@ function Reto({ progress, onSave }) {
   );
 }
 
-// =================== Rutina (con validación por micrófono) ===================
+// =================== Rutina (validación por micro + tiempo real) ===================
 const PHASES = [
   { id: "afinar", n: "Afinar", s: 60 },
   { id: "cambios", n: "Cambios de 2 acordes", s: 180 },
@@ -1036,10 +1288,12 @@ function Rutina({ progress, onSave }) {
   const streamRef = useRef(null);
   const analyserRef = useRef(null);
   const idxRef = useRef(0);
+  const leftRef = useRef(phases[0].s);
   const pairRef = useRef(pair);
   const micOnRef = useRef(false);
   const validRef = useRef({});
   const savedRef = useRef(false);
+  const secAccum = useRef(0);
   const acc = useRef({ tuned: new Set(), changes: 0, strums: 0, activeMs: 0 });
   const stableRef = useRef({ chord: null, frames: 0 });
   const currentRef = useRef(null);
@@ -1063,6 +1317,14 @@ function Rutina({ progress, onSave }) {
   }, []);
 
   const label = (p) => (p.id === "cambios" ? `Cambios ${pair[0]} y ${pair[1]}` : p.n);
+
+  const flushTime = useCallback(() => {
+    const s = secAccum.current;
+    if (s > 0) {
+      secAccum.current = 0;
+      onSave((prev) => addPractice(prev, s));
+    }
+  }, [onSave]);
 
   const resetAcc = () => {
     acc.current = { tuned: new Set(), changes: 0, strums: 0, activeMs: 0 };
@@ -1112,6 +1374,7 @@ function Rutina({ progress, onSave }) {
     noiseRef.current = 1e9;
     lastT.current = performance.now();
 
+    const gates = calThresholds(progress);
     const td = new Float32Array(analyser.fftSize);
     const fd = new Float32Array(analyser.frequencyBinCount);
     const loop = () => {
@@ -1125,7 +1388,7 @@ function Rutina({ progress, onSave }) {
       for (let i = 0; i < 2048; i++) rms += td[i] * td[i];
       rms = Math.sqrt(rms / 2048);
       noiseRef.current = Math.min(noiseRef.current * 1.001 + 1e-6, Math.max(rms, 1e-4));
-      const loud = rms > Math.max(noiseRef.current * 4, 0.012);
+      const loud = rms > Math.max(noiseRef.current * 4, gates.rmsGate);
 
       const id = phases[idxRef.current]?.id;
       const a = acc.current;
@@ -1146,7 +1409,7 @@ function Rutina({ progress, onSave }) {
       } else if (id === "cambios") {
         analyserRef.current.getFloatFrequencyData(fd);
         const { chroma, total } = chromaFromFFT(fd, getCtx().sampleRate, 4096);
-        const cand = total > 0.004 && loud ? detectChord(chroma, pairRef.current) : null;
+        const cand = total > gates.totalGate && loud ? detectChord(chroma, pairRef.current) : null;
         const st = stableRef.current;
         if (cand && cand === st.chord) st.frames += 1;
         else stableRef.current = { chord: cand, frames: cand ? 1 : 0 };
@@ -1154,6 +1417,7 @@ function Rutina({ progress, onSave }) {
           if (currentRef.current && currentRef.current !== cand && now - lastCountT.current > 700) {
             lastCountT.current = now;
             a.changes += 1;
+            buzz(15);
           }
           currentRef.current = cand;
         }
@@ -1163,7 +1427,7 @@ function Rutina({ progress, onSave }) {
           a.strums += 1;
         }
       } else if (id === "cancion" || id === "cantar") {
-        if (rms > 0.012) a.activeMs += dt;
+        if (rms > gates.rmsGate * 0.9) a.activeMs += dt;
       }
       prevRms.current = rms;
 
@@ -1185,41 +1449,47 @@ function Rutina({ progress, onSave }) {
   const saveSession = useCallback(() => {
     if (savedRef.current) return;
     savedRef.current = true;
+    buzz([30, 40, 30, 40, 90]);
     const okCount = Object.values(validRef.current).filter((v) => v === true).length;
     const withMic = Object.values(validRef.current).some((v) => v !== null);
-    const p = {
-      ...progress,
-      sessions: [...(progress.sessions || []), {
-        date: new Date().toISOString().slice(0, 10),
-        ok: withMic ? okCount : null,
-        total: phases.length,
-      }].slice(-200),
-    };
-    onSave(p);
-  }, [progress, onSave, phases.length]);
+    const extraSec = secAccum.current;
+    secAccum.current = 0;
+    onSave((prev) => {
+      let p = extraSec > 0 ? addPractice(prev, extraSec) : prev;
+      return {
+        ...p,
+        sessions: [...(p.sessions || []), {
+          date: new Date().toISOString().slice(0, 10),
+          ok: withMic ? okCount : null,
+          total: phases.length,
+        }].slice(-200),
+      };
+    });
+  }, [onSave, phases.length]);
 
   useEffect(() => {
     if (run) {
       tick.current = setInterval(() => {
-        setLeft((l) => {
-          if (l <= 1) {
-            click(getCtx(), getCtx().currentTime, true);
-            setIdx((i) => {
-              evaluatePhase(i, phases);
-              const next = i + 1;
-              if (next >= phases.length) {
-                setRun(false);
-                stopMic();
-                saveSession();
-                return i;
-              }
-              setLeft(phases[next].s);
-              return next;
-            });
-            return 0;
+        secAccum.current += 1;
+        leftRef.current -= 1;
+        setLeft(leftRef.current);
+        if (leftRef.current <= 0) {
+          click(getCtx(), getCtx().currentTime, true);
+          buzz(25);
+          const i = idxRef.current;
+          evaluatePhase(i, phases);
+          const next = i + 1;
+          if (next >= phases.length) {
+            setRun(false);
+            stopMic();
+            saveSession();
+          } else {
+            idxRef.current = next;
+            setIdx(next);
+            leftRef.current = phases[next].s;
+            setLeft(leftRef.current);
           }
-          return l - 1;
-        });
+        }
       }, 1000);
     }
     return () => clearInterval(tick.current);
@@ -1232,17 +1502,23 @@ function Rutina({ progress, onSave }) {
     }
     setRun(true);
   };
-  const pause = () => setRun(false);
+  const pause = () => { setRun(false); flushTime(); };
 
   const reset = () => {
-    setRun(false); stopMic();
-    setIdx(0); setLeft(phases[0].s);
+    setRun(false); stopMic(); flushTime();
+    idxRef.current = 0; setIdx(0);
+    leftRef.current = phases[0].s; setLeft(leftRef.current);
     validRef.current = {}; setValid({});
     savedRef.current = false;
     resetAcc(); newPair();
   };
-  useEffect(() => { setRun(false); setIdx(0); setLeft(phases[0].s); /* eslint-disable-next-line */ }, [withSinging]);
-  useEffect(() => () => stopMic(), [stopMic]);
+  useEffect(() => {
+    setRun(false);
+    idxRef.current = 0; setIdx(0);
+    leftRef.current = phases[0].s; setLeft(leftRef.current);
+    /* eslint-disable-next-line */
+  }, [withSinging]);
+  useEffect(() => () => { stopMic(); flushTime(); }, [stopMic, flushTime]);
 
   const ph = phases[idx];
   const done = idx === phases.length - 1 && left === 0 && !run;
@@ -1276,7 +1552,7 @@ function Rutina({ progress, onSave }) {
     <div>
       <p style={{ color: T.soft, fontSize: 15, lineHeight: 1.5, margin: "0 4px 14px" }}>
         <b style={{ color: T.ink, fontWeight: 600 }}>{totalMin} minutos al día.</b> El micrófono valida cada fase
-        mientras tocas: sin escribir nada, solo toca.
+        mientras tocas, y cada minuto suma a tu contador y a tu racha.
       </p>
 
       <label style={{
@@ -1356,7 +1632,6 @@ function Rutina({ progress, onSave }) {
         </div>
       </div>
 
-      {/* Validación en directo */}
       {run && micOn && (
         <div className="neu-inset" style={{ borderRadius: 16, padding: "12px 14px", marginBottom: 16, textAlign: "center" }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: T.tint, marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
@@ -1422,51 +1697,68 @@ function LiveMetric({ value, target, unit }) {
   );
 }
 
-// =================== Progreso: barra global + niveles + canciones ===================
+// =================== Progreso: XP, tiempo, racha, 8 niveles, canciones ===================
 const LEVELS = [
-  {
-    id: "n1", n: "Superviviente", num: "1", meta: "Un acorde nítido",
-    gate: "C suena limpio cinco veces seguidas: las cuatro cuerdas, sin zumbidos.",
-    auto: null,
-  },
-  {
-    id: "n2", n: "Cuatro acordes", num: "2", meta: "Una canción lenta entera",
-    gate: "Supera el nivel 3 del Reto (20 cambios) y el patrón clásico a 70 BPM sin parar.",
-    auto: (p) => (p.retoLevels && p.retoLevels[3]) || Object.values(p.bestCpm || {}).some((v) => v >= 20),
-  },
-  {
-    id: "n3", n: "Cancionero", num: "3", meta: "Cantar y tocar a la vez",
-    gate: "Una canción entera cantando, sin parar aunque falles.",
-    auto: null,
-  },
-  {
-    id: "n4", n: "Ritmo y dinámica", num: "4", meta: "Que suene con groove",
-    gate: "Tres canciones de memoria y dos patrones de ritmo distintos.",
-    auto: null,
-  },
-  {
-    id: "n5", n: "Intérprete", num: "5", meta: "Tocar para alguien",
-    gate: "Toca una canción delante de alguien. Irene cuenta.",
-    auto: null,
-  },
+  { id: "n1", n: "Superviviente", num: "1", meta: "Un acorde nítido", gate: "C suena limpio cinco veces seguidas: las cuatro cuerdas, sin zumbidos.", auto: null },
+  { id: "n2", n: "Primeros cambios", num: "2", meta: "Dos acordes fluidos", gate: "Supera el nivel 2 del Reto: 14 cambios C y F en un minuto.", auto: (p) => !!(p.retoLevels && p.retoLevels[2]) },
+  { id: "n3", n: "Cuatro acordes", num: "3", meta: "El ciclo pop entero", gate: "Supera el nivel 5 del Reto: el ciclo C, Am, F, G7 a 20 cambios.", auto: (p) => !!(p.retoLevels && p.retoLevels[5]) },
+  { id: "n4", n: "Cancionero", num: "4", meta: "Cantar y tocar a la vez", gate: "Una canción entera cantando, sin parar aunque falles.", auto: null },
+  { id: "n5", n: "Ritmo y dinámica", num: "5", meta: "Que suene con groove", gate: "Dos patrones de ritmo distintos y el chuck del patrón percusivo.", auto: null },
+  { id: "n6", n: "Nuevos acordes", num: "6", meta: "G, Em y D dominados", gate: "Supera el nivel 8 del Reto: el gran ciclo G, Em, C, D.", auto: (p) => !!(p.retoLevels && p.retoLevels[8]) },
+  { id: "n7", n: "Repertorio", num: "7", meta: "Cinco canciones", gate: "Cinco canciones de memoria, de principio a fin.", auto: null },
+  { id: "n8", n: "Intérprete", num: "8", meta: "Tocar para alguien", gate: "Toca una canción delante de alguien. Irene cuenta.", auto: null },
 ];
-const SESSION_GOAL = 75; // ~20 horas en sesiones de 15-18 min
+const PRACTICE_GOAL_MIN = 1200; // 20 horas
+const SESSION_GOAL = 75;
 
-function Progreso({ progress, onSave }) {
+const ACHIEVEMENTS = [
+  { id: "s1", n: "Primera sesión", icon: "play", test: (d) => d.sessions >= 1 },
+  { id: "r3", n: "Racha de 3", icon: "flame", test: (d) => d.streak >= 3 },
+  { id: "r7", n: "Semana en llamas", icon: "flame", test: (d) => d.streak >= 7 },
+  { id: "r30", n: "Mes imparable", icon: "flame", test: (d) => d.streak >= 30 },
+  { id: "reto1", n: "Primer reto", icon: "check", test: (d) => d.retoPassed >= 1 },
+  { id: "cpm20", n: "Club de los 20", icon: "trophy", test: (d) => d.maxCpm >= 20 },
+  { id: "reto8", n: "Reto completo", icon: "trophy", test: (d) => d.retoPassed >= 8 },
+  { id: "h1", n: "Primera hora", icon: "clock", test: (d) => d.practiceMin >= 60 },
+  { id: "h5", n: "5 horas", icon: "clock", test: (d) => d.practiceMin >= 300 },
+  { id: "h10", n: "10 horas", icon: "clock", test: (d) => d.practiceMin >= 600 },
+  { id: "h20", n: "Las 20 horas", icon: "star", test: (d) => d.practiceMin >= 1200 },
+  { id: "ear5", n: "Oído fino", icon: "ear", test: (d) => d.earBest >= 5 },
+  { id: "ear10", n: "Oído absoluto", icon: "ear", test: (d) => d.earBest >= 10 },
+  { id: "n4", n: "Medio método", icon: "music", test: (d) => d.doneLevels >= 4 },
+  { id: "n8", n: "Método completo", icon: "star", test: (d) => d.doneLevels >= 8 },
+  { id: "s25", n: "25 sesiones", icon: "check", test: (d) => d.sessions >= 25 },
+];
+
+function Progreso({ progress, onSave, onShowIntro }) {
   const [playingSong, setPlayingSong] = useState(null);
 
   const doneLevels = LEVELS.filter((lv) => (lv.auto && lv.auto(progress)) || progress.levels[lv.id]).length;
   const retoPassed = Object.values(progress.retoLevels || {}).filter(Boolean).length;
   const sessions = (progress.sessions || []).length;
-  const pctGlobal = Math.round(100 * (
-    0.4 * (doneLevels / LEVELS.length) +
-    0.2 * (retoPassed / RETO_LEVELS.length) +
-    0.4 * (Math.min(sessions, SESSION_GOAL) / SESSION_GOAL)
-  ));
+  const practiceMin = Math.floor((progress.practiceSec || 0) / 60);
+  const streak = streakDays(progress.practiceDays);
+
+  // Proporcional de verdad: la práctica manda
+  const pctGlobal = Math.min(100, Math.round(100 * (
+    0.45 * Math.min(practiceMin, PRACTICE_GOAL_MIN) / PRACTICE_GOAL_MIN +
+    0.25 * doneLevels / LEVELS.length +
+    0.15 * retoPassed / RETO_LEVELS.length +
+    0.15 * Math.min(sessions, SESSION_GOAL) / SESSION_GOAL
+  )));
+
+  const validatedBonus = (progress.sessions || []).reduce((a, s) => a + (s.ok || 0) * 5, 0);
+  const earOk = (progress.ear && progress.ear.ok) || 0;
+  const derived = {
+    sessions, retoPassed, doneLevels, practiceMin, streak,
+    maxCpm: Math.max(0, ...Object.values(progress.bestCpm || {})),
+    earBest: (progress.ear && progress.ear.best) || 0,
+  };
+  const unlockedAch = ACHIEVEMENTS.filter((a) => a.test(derived));
+  const xp = practiceMin * 2 + sessions * 20 + validatedBonus + retoPassed * 50 + doneLevels * 150 + earOk * 2 + unlockedAch.length * 25;
 
   const toggle = (id) => {
-    const p = { ...progress, levels: { ...progress.levels, [id]: !progress.levels[id] } };
-    onSave(p);
+    onSave((prev) => ({ ...prev, levels: { ...prev.levels, [id]: !prev.levels[id] } }));
   };
 
   const play = (song) => {
@@ -1476,15 +1768,24 @@ function Progreso({ progress, onSave }) {
     setTimeout(() => setPlayingSong(null), ms + 200);
   };
 
-  const Row = ({ label, value, max }) => (
+  const Row = ({ label, value, max, suffix }) => (
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
       <span style={{ fontSize: 13, color: T.soft, width: 92, flexShrink: 0 }}>{label}</span>
       <div style={{ flex: 1, height: 5, borderRadius: 99, background: T.track, overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${Math.min(100, (value / max) * 100)}%`, background: T.tint, borderRadius: 99 }} />
       </div>
-      <span style={{ fontSize: 13, color: T.ink, fontWeight: 600, fontVariantNumeric: "tabular-nums", width: 48, textAlign: "right" }}>
-        {value}/{max}
+      <span style={{ fontSize: 13, color: T.ink, fontWeight: 600, fontVariantNumeric: "tabular-nums", width: 74, textAlign: "right" }}>
+        {value}{suffix || `/${max}`}
       </span>
+    </div>
+  );
+
+  const StatChip = ({ icon, value, label, color }) => (
+    <div style={{ flex: 1, textAlign: "center" }}>
+      <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em", color: color || T.ink, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontVariantNumeric: "tabular-nums" }}>
+        <Icon d={icon} size={16} color={color || T.ink} /> {value}
+      </div>
+      <div style={{ fontSize: 11, color: T.soft, fontWeight: 600, marginTop: 2 }}>{label}</div>
     </div>
   );
 
@@ -1492,29 +1793,111 @@ function Progreso({ progress, onSave }) {
 
   return (
     <div>
+      {/* Estadísticas Duolingo-style */}
+      <div style={{
+        background: T.card, borderRadius: 16, border: `1px solid ${T.hair}`,
+        boxShadow: "var(--shadow-card)", display: "flex", padding: "14px 8px", marginBottom: 14,
+      }}>
+        <StatChip icon={IC.flame} value={streak} label={streak === 1 ? "día de racha" : "días de racha"} color={streak > 0 ? "#FF9500" : T.soft} />
+        <div style={{ width: 1, background: T.hair }} />
+        <StatChip icon={IC.clock} value={fmtTime(progress.practiceSec)} label="tocando" color={T.tint} />
+        <div style={{ width: 1, background: T.hair }} />
+        <StatChip icon={IC.check} value={xp} label="XP" color={T.green} />
+      </div>
+
       {/* Barra de progreso global */}
       <div style={{
         background: T.card, borderRadius: 20, border: `1px solid ${T.hair}`,
         boxShadow: "var(--shadow-card)", padding: "16px 18px", marginBottom: 22,
       }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>Tu camino</span>
+          <span style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>Tu camino a las 20 horas</span>
           <span style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em", color: T.tint, fontVariantNumeric: "tabular-nums" }}>{pctGlobal}%</span>
         </div>
         <div className="neu-inset" style={{ height: 12, borderRadius: 99, marginTop: 10, overflow: "hidden" }}>
           <div style={{
             height: "100%", width: `${pctGlobal}%`, borderRadius: 99,
-            background: `linear-gradient(90deg, ${"var(--tint)"}, ${"var(--green)"})`,
+            background: "linear-gradient(90deg, var(--tint), var(--green))",
             transition: "width .6s",
           }} />
         </div>
+        <Row label="Minutos" value={Math.min(practiceMin, PRACTICE_GOAL_MIN)} max={PRACTICE_GOAL_MIN} suffix={` / ${PRACTICE_GOAL_MIN}`} />
         <Row label="Niveles" value={doneLevels} max={LEVELS.length} />
         <Row label="Reto" value={retoPassed} max={RETO_LEVELS.length} />
         <Row label="Sesiones" value={Math.min(sessions, SESSION_GOAL)} max={SESSION_GOAL} />
+        <p style={{ fontSize: 12, color: T.faint, margin: "10px 0 0", lineHeight: 1.45 }}>
+          El tiempo tocando pesa un 45%: no hay atajos, hay minutos.
+        </p>
       </div>
 
-      {/* Niveles */}
-      <SectionLabel>Niveles</SectionLabel>
+      <SectionLabel>Recordatorio diario</SectionLabel>
+      <div style={{
+        background: T.card, borderRadius: 16, border: `1px solid ${T.hair}`,
+        boxShadow: "var(--shadow-card)", padding: "14px 16px", marginBottom: 22,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: T.ink, cursor: "pointer", flex: 1 }}>
+            <input type="checkbox" checked={!!(progress.reminder && progress.reminder.enabled)}
+              onChange={async (e) => {
+                const on = e.target.checked;
+                if (on && typeof Notification !== "undefined" && Notification.permission !== "granted") {
+                  const perm = await Notification.requestPermission();
+                  if (perm !== "granted") return;
+                }
+                onSave((prev) => ({ ...prev, reminder: { ...(prev.reminder || {}), enabled: on, time: (prev.reminder && prev.reminder.time) || "19:00" } }));
+              }}
+              style={{ accentColor: T.tint, width: 17, height: 17 }} />
+            Avísame para practicar
+          </label>
+          <input type="time"
+            value={(progress.reminder && progress.reminder.time) || "19:00"}
+            onChange={(e) => onSave((prev) => ({ ...prev, reminder: { ...(prev.reminder || {}), time: e.target.value } }))}
+            style={{
+              fontFamily: FONT, fontSize: 14, fontWeight: 600, color: T.tint,
+              background: T.fill, border: "none", borderRadius: 10, padding: "7px 10px",
+            }} />
+        </div>
+        <p style={{ fontSize: 12, color: T.faint, margin: "8px 0 0", lineHeight: 1.45 }}>
+          Funciona con la app abierta o en segundo plano. Protege la racha.
+        </p>
+      </div>
+
+      <SectionLabel>Evolución del Reto</SectionLabel>
+      <div style={{
+        background: T.card, borderRadius: 16, border: `1px solid ${T.hair}`,
+        boxShadow: "var(--shadow-card)", padding: "12px 12px 8px", marginBottom: 22,
+      }}>
+        <ChartCPM history={progress.history} />
+        <div style={{ fontSize: 11, color: T.faint, textAlign: "center", paddingBottom: 4 }}>
+          Cambios por minuto en tus últimos retos
+        </div>
+      </div>
+
+      <SectionLabel>Logros · {unlockedAch.length}/{ACHIEVEMENTS.length}</SectionLabel>
+      <div className="grid grid-cols-4 gap-2" style={{ marginBottom: 22 }}>
+        {ACHIEVEMENTS.map((a) => {
+          const got = a.test(derived);
+          return (
+            <div key={a.id} style={{
+              background: T.card, borderRadius: 14, border: `1px solid ${got ? T.tint : T.hair}`,
+              padding: "10px 4px 8px", textAlign: "center",
+              boxShadow: got ? "var(--shadow-card)" : "none",
+              opacity: got ? 1 : 0.45,
+            }}>
+              <div style={{
+                width: 34, height: 34, borderRadius: 99, margin: "0 auto 5px",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: got ? T.tint : T.fill,
+              }}>
+                <Icon d={IC[a.icon]} size={16} color={got ? "#fff" : T.soft} />
+              </div>
+              <div style={{ fontSize: 10, fontWeight: 600, color: got ? T.ink : T.soft, lineHeight: 1.25 }}>{a.n}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <SectionLabel>Niveles y canciones</SectionLabel>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
         {LEVELS.map((lv) => {
           const autoDone = lv.auto ? lv.auto(progress) : false;
@@ -1551,16 +1934,17 @@ function Progreso({ progress, onSave }) {
                 </div>
               </div>
               {!locked && !autoDone && (
-                <div style={{ marginTop: 10, paddingLeft: 42 }}>
+                <div style={{ marginTop: 10, paddingLeft: 42, display: "flex", alignItems: "center", gap: 10 }}>
                   <button onClick={() => toggle(lv.id)}
                     style={{
                       fontFamily: FONT, fontSize: 14, fontWeight: 600,
-                      color: done ? T.soft : "#fff",
-                      background: done ? T.fill : T.tint,
-                      border: "none", borderRadius: 999, padding: "7px 16px",
+                      color: done ? T.soft : lv.auto ? T.tint : "#fff",
+                      background: done ? T.fill : lv.auto ? "transparent" : T.tint,
+                      border: lv.auto && !done ? `1px solid ${T.tint}` : "none",
+                      borderRadius: 999, padding: "7px 16px",
                     }}
                     className="active:scale-[0.97] transition-transform">
-                    {done ? "Desmarcar" : "He pasado la puerta"}
+                    {done ? "Desmarcar" : lv.auto ? "Marcar a mano" : "He pasado la puerta"}
                   </button>
                 </div>
               )}
@@ -1582,11 +1966,51 @@ function Progreso({ progress, onSave }) {
       </div>
 
       <p style={{ fontSize: 12, color: T.faint, textAlign: "center", lineHeight: 1.5, margin: "0 12px" }}>
-        Las canciones son tradicionales o progresiones clásicas. Para letras y más temas, busca los acordes en Ukutabs.
+        Cada casilla de una canción es un compás. Las canciones son tradicionales o progresiones clásicas; para letras y
+        más temas, busca los acordes en Ukutabs.
       </p>
+      <div style={{ textAlign: "center", marginTop: 12 }}>
+        <button onClick={onShowIntro}
+          style={{ fontFamily: FONT, fontSize: 13, fontWeight: 600, color: T.tint, background: "transparent", border: "none" }}>
+          Ver la introducción de nuevo
+        </button>
+      </div>
     </div>
   );
 }
+function ChartCPM({ history = [] }) {
+  const data = history.slice(-20);
+  if (data.length < 2) {
+    return (
+      <div style={{ fontSize: 13, color: T.soft, textAlign: "center", padding: "14px 0" }}>
+        Completa al menos dos retos para ver tu curva de progreso.
+      </div>
+    );
+  }
+  const W = 300, H = 110, padL = 26, padR = 8, padT = 10, padB = 20;
+  const maxY = Math.max(30, ...data.map((d) => d.cpm));
+  const x = (i) => padL + (i / (data.length - 1)) * (W - padL - padR);
+  const y = (v) => padT + (1 - v / maxY) * (H - padT - padB);
+  const pts = data.map((d, i) => `${x(i)},${y(d.cpm)}`).join(" ");
+  const gridVals = [0, Math.round(maxY / 2), maxY];
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+      {gridVals.map((v) => (
+        <g key={v}>
+          <line x1={padL} y1={y(v)} x2={W - padR} y2={y(v)} stroke={T.track} strokeWidth="1" />
+          <text x={padL - 5} y={y(v) + 3} textAnchor="end" fontSize="9" fill={T.soft} fontFamily={FONT}>{v}</text>
+        </g>
+      ))}
+      <polyline points={pts} fill="none" stroke={T.tint} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      {data.map((d, i) => (
+        <circle key={i} cx={x(i)} cy={y(d.cpm)} r="3.2" fill={T.tint} />
+      ))}
+      <text x={padL} y={H - 6} fontSize="9" fill={T.soft} fontFamily={FONT}>{data[0].date.slice(5)}</text>
+      <text x={W - padR} y={H - 6} textAnchor="end" fontSize="9" fill={T.soft} fontFamily={FONT}>{data[data.length - 1].date.slice(5)}</text>
+    </svg>
+  );
+}
+
 function SongCard({ song, playing, onPlay }) {
   const strumName = (STRUM_PATTERNS.find((p) => p.id === song.strum) || {}).n || "";
   return (
@@ -1625,6 +2049,68 @@ function SongCard({ song, playing, onPlay }) {
   );
 }
 
+// =================== Onboarding ===================
+const INTRO = [
+  {
+    icon: "music", title: "Tu ukelele, en corto",
+    body: "Cuatro cuerdas afinadas G, C, E, A. La primera pestaña te ayuda a afinarlo con el micrófono. Sujétalo contra el antebrazo, sin apretar: el ukelele casi se sostiene solo.",
+  },
+  {
+    icon: "clock", title: "El método: 15 minutos al día",
+    body: "Corto y diario gana a largo y esporádico. La Rutina te guía por fases y el micrófono valida que las cumples. El Reto mide tus cambios por minuto. Todo suma a tu racha y tus 20 horas.",
+  },
+  {
+    icon: "flame", title: "Dos verdades incómodas",
+    body: "Las yemas duelen las dos primeras semanas: es normal y se pasa. Y sonarás mal al principio: también es normal. Lento y limpio gana a rápido y sucio. Nos vemos en el nivel 8.",
+  },
+];
+function Onboarding({ onDone }) {
+  const [i, setI] = useState(0);
+  const s = INTRO[i];
+  const last = i === INTRO.length - 1;
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 50,
+      background: T.headerBg,
+      backdropFilter: "saturate(180%) blur(24px)",
+      WebkitBackdropFilter: "saturate(180%) blur(24px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+    }}>
+      <div key={i} className="tab-in-right" style={{
+        background: T.card, borderRadius: 24, border: `1px solid ${T.hair}`,
+        boxShadow: "0 20px 60px rgba(0,0,0,0.18)", padding: "28px 24px",
+        maxWidth: 340, width: "100%", textAlign: "center",
+      }}>
+        <div className="neu" style={{
+          width: 64, height: 64, borderRadius: 99, margin: "0 auto 16px",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <Icon d={IC[s.icon]} size={28} color={T.tint} />
+        </div>
+        <div style={{ fontSize: 21, fontWeight: 700, letterSpacing: "-0.02em", color: T.ink, marginBottom: 8 }}>{s.title}</div>
+        <div style={{ fontSize: 14.5, color: T.soft, lineHeight: 1.55, marginBottom: 20 }}>{s.body}</div>
+        <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 18 }}>
+          {INTRO.map((_, j) => (
+            <span key={j} style={{
+              width: j === i ? 20 : 7, height: 7, borderRadius: 99,
+              background: j === i ? T.tint : T.track, transition: "all .25s",
+            }} />
+          ))}
+        </div>
+        <Button onClick={() => (last ? onDone() : setI(i + 1))} style={{ width: "100%", padding: "13px 0" }}>
+          {last ? "A tocar" : "Siguiente"}
+        </Button>
+        {!last && (
+          <button onClick={onDone}
+            style={{ marginTop: 10, fontFamily: FONT, fontSize: 13, fontWeight: 600, color: T.soft, background: "transparent", border: "none" }}>
+            Saltar
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // =================== App ===================
 const TABS = [
   { id: "afinar", label: "Afinar" },
@@ -1637,14 +2123,122 @@ const TABS = [
 
 export default function App() {
   const [tab, setTab] = useState("afinar");
+  const [dir, setDir] = useState("right");
   const [progress, setProgress] = useState(DEFAULT_PROGRESS);
+  const [moreTabs, setMoreTabs] = useState(true);
+  const [showIntro, setShowIntro] = useState(false);
+  const tabsRef = useRef(null);
+  const pillRefs = useRef({});
+  const touchRef = useRef(null);
 
-  useEffect(() => { loadProgress().then(setProgress); }, []);
-  const handleSave = (p) => { setProgress(p); saveProgress(p); };
+  useEffect(() => {
+    loadProgress().then((p) => {
+      setProgress(p);
+      if (!p.onboarded) setShowIntro(true);
+    });
+  }, []);
+
+  const closeIntro = useCallback(() => {
+    setShowIntro(false);
+    handleSaveRef.current((prev) => ({ ...prev, onboarded: true }));
+  }, []);
+
+  const handleSave = useCallback((updater) => {
+    setProgress((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      saveProgress(next);
+      return next;
+    });
+  }, []);
+  const handleSaveRef = useRef(handleSave);
+  useEffect(() => { handleSaveRef.current = handleSave; }, [handleSave]);
+
+  // Tiempo con la app abierta
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        handleSave((prev) => ({ ...prev, appSec: (prev.appSec || 0) + 15 }));
+      }
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [handleSave]);
+
+  // Recordatorio diario
+  useEffect(() => {
+    const check = () => {
+      handleSave((prev) => {
+        const r = prev.reminder || {};
+        if (!r.enabled || typeof Notification === "undefined" || Notification.permission !== "granted") return prev;
+        const now = new Date();
+        const today = now.toISOString().slice(0, 10);
+        if (r.last === today) return prev;
+        const [hh, mm] = (r.time || "19:00").split(":").map(Number);
+        if (now.getHours() > hh || (now.getHours() === hh && now.getMinutes() >= mm)) {
+          // Si ya practicó hoy, no molestar
+          if ((prev.practiceDays || {})[today] > 0) {
+            return { ...prev, reminder: { ...r, last: today } };
+          }
+          notifyPractice();
+          return { ...prev, reminder: { ...r, last: today } };
+        }
+        return prev;
+      });
+    };
+    check();
+    const iv = setInterval(check, 60000);
+    return () => clearInterval(iv);
+  }, [handleSave]);
+
+  const goTo = (id, direction) => {
+    setDir(direction);
+    setTab(id);
+  };
+  const selectTab = (id) => {
+    const from = TABS.findIndex((t) => t.id === tab);
+    const to = TABS.findIndex((t) => t.id === id);
+    goTo(id, to >= from ? "right" : "left");
+  };
+
+  // Centrar la pestaña activa en la barra
+  useEffect(() => {
+    const el = pillRefs.current[tab];
+    if (el) el.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+  }, [tab]);
+
+  // Indicador de "hay más" a la derecha
+  const onTabsScroll = () => {
+    const el = tabsRef.current;
+    if (!el) return;
+    setMoreTabs(el.scrollLeft + el.clientWidth < el.scrollWidth - 8);
+  };
+
+  // Swipe entre pestañas
+  const onTouchStart = (e) => {
+    const t = e.target;
+    if (t && t.closest && (t.closest(".tabs-scroll") || t.closest("input"))) {
+      touchRef.current = null;
+      return;
+    }
+    touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  };
+  const onTouchEnd = (e) => {
+    const s = touchRef.current;
+    if (!s) return;
+    touchRef.current = null;
+    const dx = e.changedTouches[0].clientX - s.x;
+    const dy = e.changedTouches[0].clientY - s.y;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    const i = TABS.findIndex((t) => t.id === tab);
+    if (dx < 0 && i < TABS.length - 1) goTo(TABS[i + 1].id, "right");
+    if (dx > 0 && i > 0) goTo(TABS[i - 1].id, "left");
+  };
+
+  const streak = streakDays(progress.practiceDays);
 
   return (
     <div style={{ background: T.bg, fontFamily: FONT, minHeight: "100vh", color: T.ink, WebkitFontSmoothing: "antialiased" }}
       className="w-full flex justify-center">
+      {showIntro && <Onboarding onDone={closeIntro} />}
       <div className="w-full" style={{ maxWidth: 480 }}>
 
         <div style={{
@@ -1653,38 +2247,76 @@ export default function App() {
           backdropFilter: "saturate(180%) blur(20px)",
           WebkitBackdropFilter: "saturate(180%) blur(20px)",
           borderBottom: `1px solid ${T.hair}`,
-          padding: "16px 16px 12px",
+          padding: "14px 16px 10px",
         }}>
-          <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.022em", lineHeight: 1.1, margin: 0 }}>
-            Ukelele Fácil
-          </h1>
-          <p style={{ color: T.soft, fontSize: 13, margin: "3px 0 12px" }}>15 minutos al día · progreso medible</p>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div>
+              <h1 style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-0.022em", lineHeight: 1.1, margin: 0 }}>
+                Ukelele Fácil
+              </h1>
+              <p style={{ color: T.soft, fontSize: 13, margin: "3px 0 0" }}>15 minutos al día</p>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 4,
+                background: T.fill, borderRadius: 999, padding: "5px 10px",
+                fontSize: 13, fontWeight: 700, color: streak > 0 ? "#FF9500" : T.soft,
+                fontVariantNumeric: "tabular-nums",
+              }}>
+                <Icon d={IC.flame} size={14} color={streak > 0 ? "#FF9500" : T.soft} /> {streak}
+              </span>
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 4,
+                background: T.fill, borderRadius: 999, padding: "5px 10px",
+                fontSize: 13, fontWeight: 700, color: T.tint, fontVariantNumeric: "tabular-nums",
+              }}>
+                <Icon d={IC.clock} size={14} color={T.tint} /> {fmtTime(progress.practiceSec)}
+              </span>
+            </div>
+          </div>
 
-          <div style={{ background: T.track, borderRadius: 11, padding: 2, display: "flex", gap: 2 }}>
-            {TABS.map((t) => (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                style={{
-                  flex: 1, minWidth: 0, border: "none", borderRadius: 9, padding: "7px 1px",
-                  whiteSpace: "nowrap", letterSpacing: "-0.01em",
-                  fontFamily: FONT, fontSize: 12, fontWeight: 600,
-                  color: tab === t.id ? T.ink : T.soft,
-                  background: tab === t.id ? T.segActive : "transparent",
-                  boxShadow: tab === t.id ? "var(--shadow-seg)" : "none",
-                  transition: "all .18s",
-                }}>
-                {t.label}
-              </button>
-            ))}
+          <div style={{ position: "relative", marginTop: 12 }}>
+            <div ref={tabsRef} className="tabs-scroll" onScroll={onTabsScroll}>
+              {TABS.map((t) => {
+                const active = tab === t.id;
+                return (
+                  <button key={t.id} ref={(el) => { pillRefs.current[t.id] = el; }}
+                    onClick={() => selectTab(t.id)}
+                    style={{
+                      flex: "0 0 auto", minWidth: "22.5%", border: "none", borderRadius: 999,
+                      padding: "8px 14px", whiteSpace: "nowrap",
+                      fontFamily: FONT, fontSize: 13.5, fontWeight: 600, letterSpacing: "-0.01em",
+                      color: active ? "#fff" : T.ink,
+                      background: active ? T.tint : T.fill,
+                      transition: "all .18s",
+                    }}>
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+            {moreTabs && (
+              <div style={{
+                position: "absolute", top: 0, right: -2, bottom: 2, width: 44,
+                background: "linear-gradient(90deg, transparent, var(--bg))",
+                display: "flex", alignItems: "center", justifyContent: "flex-end",
+                pointerEvents: "none",
+              }}>
+                <Icon d={IC.chev} size={15} color={T.soft} />
+              </div>
+            )}
           </div>
         </div>
 
-        <div style={{ padding: "18px 16px 40px" }}>
-          {tab === "afinar" && <Afinador />}
-          {tab === "acordes" && <Acordes />}
+        <div key={tab} className={dir === "right" ? "tab-in-right" : "tab-in-left"}
+          onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}
+          style={{ padding: "18px 16px 40px" }}>
+          {tab === "afinar" && <Afinador progress={progress} onSave={handleSave} />}
+          {tab === "acordes" && <Acordes progress={progress} onSave={handleSave} />}
           {tab === "rasgueo" && <Rasgueo />}
           {tab === "reto" && <Reto progress={progress} onSave={handleSave} />}
           {tab === "rutina" && <Rutina progress={progress} onSave={handleSave} />}
-          {tab === "progreso" && <Progreso progress={progress} onSave={handleSave} />}
+          {tab === "progreso" && <Progreso progress={progress} onSave={handleSave} onShowIntro={() => setShowIntro(true)} />}
 
           <p style={{ color: T.faint, fontSize: 12, textAlign: "center", marginTop: 28 }}>
             Lento y limpio gana a rápido y sucio.
